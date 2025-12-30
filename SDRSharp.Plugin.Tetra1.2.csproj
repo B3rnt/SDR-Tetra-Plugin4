@@ -1,0 +1,59 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net7.0-windows</TargetFramework>
+    <Platforms>x86</Platforms>
+    <PlatformTarget>x86</PlatformTarget>
+    <UseWindowsForms>true</UseWindowsForms>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <AssemblyName>SDRSharp.Plugin.Tetra</AssemblyName>
+    <RootNamespace>SDRSharp.Plugin.Tetra</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x86'">
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <WarningLevel>0</WarningLevel>
+    <DebugType>full</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <DefineConstants>TRACE</DefineConstants>
+    <OutputPath>..\Debug\</OutputPath>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x86'">
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Update="DialogConfigure.cs" />
+    <Compile Update="Display.cs" />
+    <Compile Update="NetInfoWindow.cs" />
+    <Compile Update="TetraPanel.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Properties\Settings.settings">
+      <Generator>SettingsSingleFileGenerator</Generator>
+      <LastGenOutput>Settings.Designer.cs</LastGenOutput>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="SDRSharp.Radio">
+      <HintPath>lib\native\x86\SDRSharp.Radio.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  
+    <Reference Include="SDRSharp.Common">
+      <HintPath>lib\native\x86\SDRSharp.Common.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  
+    <Reference Include="SDRSharp.PanView">
+      <HintPath>lib\native\x86\SDRSharp.PanView.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>
