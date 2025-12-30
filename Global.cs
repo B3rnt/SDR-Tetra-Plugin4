@@ -17,44 +17,30 @@ namespace SDRSharp.Tetra
     }
 
     /// <summary>
-    /// Backwards compatible access to runtime cached values.
-    /// 
-    /// IMPORTANT: In multi-channel mode this is thread-scoped (ThreadStatic).
-    /// The channel runner/decoder must set <see cref="Current"/> before parsing/logging.
+    /// Runtime cache for values broadcast in SYSINFO (MAC) but used when logging
+    /// other layers (e.g. MM). In multi-channel mode we keep this per decoder by
+    /// switching the current context at the start of each decode call.
     /// </summary>
     public static class TetraRuntime
     {
-        // Fallback for legacy single-channel paths that don't set Current.
-        private static int _fallbackLocationArea = -1;
-        private static int _fallbackNumberOfCommonSc = -1;
-
-        [ThreadStatic]
-        private static TetraRuntimeContext _current;
+        [ThreadStatic] private static TetraRuntimeContext _current;
 
         public static TetraRuntimeContext Current
         {
-            get => _current;
+            get => _current ??= new TetraRuntimeContext();
             set => _current = value;
         }
 
         public static int CurrentLocationArea
         {
-            get => _current != null ? _current.CurrentLocationArea : _fallbackLocationArea;
-            set
-            {
-                if (_current != null) _current.CurrentLocationArea = value;
-                else _fallbackLocationArea = value;
-            }
+            get => Current.CurrentLocationArea;
+            set => Current.CurrentLocationArea = value;
         }
 
         public static int NumberOfCommonSC
         {
-            get => _current != null ? _current.NumberOfCommonSC : _fallbackNumberOfCommonSc;
-            set
-            {
-                if (_current != null) _current.NumberOfCommonSC = value;
-                else _fallbackNumberOfCommonSc = value;
-            }
+            get => Current.NumberOfCommonSC;
+            set => Current.NumberOfCommonSC = value;
         }
     }
 
