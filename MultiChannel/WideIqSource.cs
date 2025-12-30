@@ -24,6 +24,7 @@ namespace SDRSharp.Tetra.MultiChannel
             _control = control;
             _proc = new WideIqProcessor();
             _proc.IQReady += OnIqReady;
+            _proc.Enabled = true;
 
             // Try to hook the widest available IQ.
             // NOTE: Some SDR# builds may not expose RawIQ; if you need to change this,

@@ -142,6 +142,7 @@ namespace SDRSharp.Tetra
             try
             {
                 InitializeComponent();
+                _audioProcessor ??= new AudioProcessor();
             // Ensure initial TS role labels are shown even before the first timer tick
             UpdateTimeslotRoleLabels();
 
@@ -503,15 +504,14 @@ namespace SDRSharp.Tetra
             };
             _decodingThread.Start();
 
-            _audioProcessor.Enabled = true;
-            _needDisplayBufferUpdate = _tetraSettings != null && _tetraSettings.ShowDiagram;
+            if (_audioProcessor != null) _audioProcessor.Enabled = true;
+_needDisplayBufferUpdate = _tetraSettings != null && _tetraSettings.ShowDiagram;
         }
 
         private void DecoderStop()
         {
-            _audioProcessor.Enabled = false;
-
-            _decodingIsStarted = false;
+            if (_audioProcessor != null) _audioProcessor.Enabled = false;
+_decodingIsStarted = false;
 
             if (_decodingThread != null)
             {
