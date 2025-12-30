@@ -68,8 +68,10 @@ namespace SDRSharp.Tetra
 
         public TetraDecoder(ITetraDecoderHost owner)
         {
-            _owner = owner;
             _panel = owner;
+            _owner = owner as Control;
+            if (_owner == null)
+                throw new ArgumentException("Decoder host must be a WinForms Control (e.g., UserControl)", nameof(owner));
 
             _bbBuffer = UnsafeBuffer.Create(30);
             _bbBufferPtr = (byte*)_bbBuffer;
