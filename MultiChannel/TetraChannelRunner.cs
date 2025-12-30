@@ -62,6 +62,42 @@ namespace SDRSharp.Tetra.MultiChannel
             _agc.Decay = settings.AgcDecay;
         }
 
+
+        private static long GetCenterFrequencyHz(ISharpControl control)
+        {
+            try
+            {
+                // Prefer CenterFrequency if available (RawIQ is centered on hardware LO)
+                var pCenter = control.GetType().GetProperty("CenterFrequency");
+                if (pCenter != null)
+                {
+                    var v = pCenter.GetValue(control, null);
+                    if (v is long l) return l;
+                    if (v is int i) return i;
+                    if (v is double d) return (long)d;
+                }
+
+                // Otherwise derive from Frequency and FrequencyShift (if present)
+                long freq = control.Frequency;
+                var pShift = control.GetType().GetProperty("FrequencyShift");
+                if (pShift != null)
+                {
+                    var sv = pShift.GetValue(control, null);
+                    long shift = 0;
+                    if (sv is int si) shift = si;
+                    else if (sv is long sl) shift = sl;
+                    else if (sv is double sd) shift = (long)sd;
+                    return freq - shift;
+                }
+
+                return freq;
+            }
+            catch
+            {
+                return control.Frequency;
+            }
+        }
+
         private void EnsureOutBuffer(int complexCount)
         {
             if (_outBuf != null && _outBuf.Length >= complexCount)
@@ -77,7 +113,8 @@ namespace SDRSharp.Tetra.MultiChannel
             if (!_settings.Enabled) return;
             if (_settings.FrequencyHz <= 0) return;
 
-            var centerHz = _control.Frequency;
+            var centerHz = GetCenterFrequencyHz(_control);
+
 
             // (Re)configure when sample rate or center changes significantly
             if (Math.Abs(samplerate - _lastFs) > 1 || centerHz != _lastCenterHz)
