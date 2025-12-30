@@ -1,0 +1,50 @@
+name: Build SDR-Tetra-Plugin (x86) + Artifact
+
+on:
+  push:
+    branches: [ "master", "main" ]
+  pull_request:
+
+jobs:
+  build-x86:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "5.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      # Build straight into ./artifact (so we ALWAYS capture the csproj output)
+      - name: Build (Release | x86 -> artifact)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifact | Out-Null
+          dotnet build -c Release -p:Platform=x86 --no-restore -o artifact
+
+      # Copy ALL your required DLLs into the same artifact folder
+      - name: Copy required DLLs (lib/native/x86 -> artifact)
+        shell: pwsh
+        run: |
+          if (!(Test-Path "lib\native\x86")) {
+            Write-Error "Expected folder lib/native/x86 not found. Please add it to the repo."
+          }
+          Copy-Item -Path "lib\native\x86\*" -Destination artifact -Recurse -Force
+
+      # Debug: show what will be uploaded (you should see SDRSharp.Plugin.*.dll here)
+      - name: List artifact contents
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path artifact | Sort-Object Name | Format-Table Name, Length
+
+      - name: Upload full artifact (x86)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SDR-Tetra-Plugin_x86_full
+          path: artifact
