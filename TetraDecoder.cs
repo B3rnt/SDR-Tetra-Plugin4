@@ -387,17 +387,6 @@ namespace SDRSharp.Tetra
                     }
                 }
 
-                if (_data.Count > 0) UpdateData(_data);
-
-                #endregion
-
-                return trafficChannel;
-            }
-            finally
-            {
-                TetraRuntime.Current = prevRuntime;
-            }
-        }
 
             _haveErrors = false;
 
@@ -654,6 +643,11 @@ namespace SDRSharp.Tetra
 
             return trafficChannel;
         }
+        finally
+        {
+            TetraRuntime.Current = prevRuntime;
+        }
+    }
 
         private void UpdateSyncInfo(ReceivedData syncInfo)
         {
