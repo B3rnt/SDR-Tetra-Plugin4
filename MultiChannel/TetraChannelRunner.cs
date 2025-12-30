@@ -16,7 +16,8 @@ namespace SDRSharp.Tetra.MultiChannel
 
         private double _lastFs;
         private long _lastCenterHz;
-        private double _afcHz; // per-channel AFC correction in Hz
+	    private double _afcHz; // per-channel AFC correction in Hz
+	    private readonly object _afcLock = new object();
 
         // Small reusable buffer for resampled output
         private UnsafeBuffer _outBuf;
@@ -36,8 +37,8 @@ namespace SDRSharp.Tetra.MultiChannel
             _control = control;
             _settings = settings;
 
-            _panel = new TetraPanel(_control, externalIq: true);
-            _panel.AfcCorrectionRequested = ApplyAfcCorrection;
+	        _panel = new TetraPanel(_control, externalIq: true);
+	        _panel.AfcCorrectionRequested = ApplyAfcCorrection;
 
             // Apply decoder host linkage (TetraPanel already exposes MmOnlyMode itself,
             // but TetraDecoder was patched to depend only on ITetraDecoderHost)
@@ -54,6 +55,32 @@ namespace SDRSharp.Tetra.MultiChannel
 
             EnsureOutBuffer(8192);
         }
+
+	    /// <summary>
+	    /// Apply fine AFC correction for this channel only. The value passed is in Hz and is
+	    /// derived from the decoder's frequency error estimate. We clamp and smooth it to
+	    /// avoid instability.
+	    /// </summary>
+	    private void ApplyAfcCorrection(double hz)
+	    {
+	        // Clamp step to avoid sudden jumps
+	        const double maxStep = 50.0; // Hz per tick
+	        if (hz > maxStep) hz = maxStep;
+	        else if (hz < -maxStep) hz = -maxStep;
+
+	        lock (_afcLock)
+	        {
+	            // Integrate with a little smoothing
+	            _afcHz = (_afcHz * 0.9) + (hz * 0.1);
+
+	            // Reconfigure DDC immediately if we're already configured
+	            if (_lastFs > 0 && _lastCenterHz != 0)
+	            {
+	                var offset = (double)(_settings.FrequencyHz - _lastCenterHz) - _afcHz;
+	                _ddc.Configure(_lastFs, offset);
+	            }
+	        }
+	    }
 
         public void UpdateSettings(ChannelSettings settings)
         {
@@ -119,12 +146,14 @@ namespace SDRSharp.Tetra.MultiChannel
 
 
             // (Re)configure when sample rate or center changes significantly
-            if (Math.Abs(samplerate - _lastFs) > 1 || centerHz != _lastCenterHz)
+	            if (Math.Abs(samplerate - _lastFs) > 1 || centerHz != _lastCenterHz)
             {
                 _lastFs = samplerate;
                 _lastCenterHz = centerHz;
-                var offset = (double)(_settings.FrequencyHz - centerHz);
-                _ddc.Configure(samplerate, offset);
+	                double afc;
+	                lock (_afcLock) afc = _afcHz;
+	                var offset = (double)(_settings.FrequencyHz - centerHz) - afc;
+	                _ddc.Configure(samplerate, offset);
             }
 
             EnsureOutBuffer(8192);

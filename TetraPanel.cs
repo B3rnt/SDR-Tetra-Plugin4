@@ -133,7 +133,7 @@ namespace SDRSharp.Tetra
         private const int CallTimeout = 10;
         private int _currentChPriority;
         private readonly bool _externalIqMode;
-        internal Action<double>? AfcCorrectionRequested;
+        internal Action<double> AfcCorrectionRequested;
 
         #region Init and store settings
         public unsafe TetraPanel(ISharpControl control) : this(control, externalIq: false) { }
@@ -1757,7 +1757,7 @@ private static string GetRoleText(int timeslot, int nCommonSc, bool isActive)
                 if (_freqError > 200 || _freqError < -200)
                 {
                     _isAfcWork = true;
-                    if (_externalIqMode) { AfcCorrectionRequested?.Invoke(_freqError); } else { _controlInterface.Frequency += (long)_freqError; }
+                    if (_externalIqMode) { if (AfcCorrectionRequested != null) AfcCorrectionRequested(_freqError); } else { _controlInterface.Frequency += (long)_freqError; }
                     _freqError = 0;
                 }
             }
