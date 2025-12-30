@@ -773,4 +773,5 @@ namespace SDRSharp.Tetra
 
         public Mode TetraMode { get; set; }
     }
+#endregion
 }
