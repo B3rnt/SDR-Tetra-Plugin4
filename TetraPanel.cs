@@ -376,7 +376,10 @@ namespace SDRSharp.Tetra
 
         private void StartDecoding()
         {
-            _ifProcessor.Enabled = true;
+            // In multi-channel mode, this panel can be fed externally (DDC) and may not
+            // own an IFProcessor/control interface. Keep legacy behavior when present.
+            if (_ifProcessor != null)
+                _ifProcessor.Enabled = true;
 
             _processIsStarted = true;
 
@@ -385,7 +388,8 @@ namespace SDRSharp.Tetra
 
         private void StopDecoding()
         {
-            _ifProcessor.Enabled = false;
+            if (_ifProcessor != null)
+                _ifProcessor.Enabled = false;
 
             _processIsStarted = false;
 
@@ -397,6 +401,23 @@ namespace SDRSharp.Tetra
          */
         private bool CheckConditions()
         {
+            // Legacy single-channel mode uses SDR#'s IF processor chain.
+            // Multi-channel mode feeds IQ externally and does not require forcing SDR# settings.
+            if (_ifProcessor == null || _controlInterface == null)
+            {
+                // If we already know the incoming IQ samplerate, still sanity-check it.
+                if (_iqSamplerate > 0 && _iqSamplerate < 25000)
+                {
+                    MessageBox.Show(
+                        "IQ samplerate too low for TETRA. Increase SDR# sample rate/bandwidth or DDC output rate (>= 25000).",
+                        "Error",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Exclamation);
+                    return false;
+                }
+                return true;
+            }
+
             this._ifProcessor.SampleRate = 25000;
             this._controlInterface.StartRadio();
             this._controlInterface.DetectorType = DetectorType.WFM;
