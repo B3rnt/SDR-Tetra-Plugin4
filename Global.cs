@@ -6,13 +6,56 @@ using System.Runtime.CompilerServices;
 namespace SDRSharp.Tetra
 {
     /// <summary>
-    /// Runtime cache for values broadcast in SYSINFO (MAC) but used when logging
-    /// other layers (e.g. MM). SDRtetra prints a cached LA for MM lines.
+    /// Per-instance runtime cache for values broadcast in SYSINFO (MAC) but used when logging
+    /// other layers (e.g. MM). In multi-channel mode, each decoder must keep its own cached
+    /// values to avoid cross-talk between instances.
+    /// </summary>
+    public sealed class TetraRuntimeContext
+    {
+        public int CurrentLocationArea = -1;
+        public int NumberOfCommonSC = -1;
+    }
+
+    /// <summary>
+    /// Backwards compatible access to runtime cached values.
+    /// 
+    /// IMPORTANT: In multi-channel mode this is thread-scoped (ThreadStatic).
+    /// The channel runner/decoder must set <see cref="Current"/> before parsing/logging.
     /// </summary>
     public static class TetraRuntime
     {
-        public static int CurrentLocationArea = -1;
-        public static int NumberOfCommonSC = -1;
+        // Fallback for legacy single-channel paths that don't set Current.
+        private static int _fallbackLocationArea = -1;
+        private static int _fallbackNumberOfCommonSc = -1;
+
+        [ThreadStatic]
+        private static TetraRuntimeContext _current;
+
+        public static TetraRuntimeContext Current
+        {
+            get => _current;
+            set => _current = value;
+        }
+
+        public static int CurrentLocationArea
+        {
+            get => _current != null ? _current.CurrentLocationArea : _fallbackLocationArea;
+            set
+            {
+                if (_current != null) _current.CurrentLocationArea = value;
+                else _fallbackLocationArea = value;
+            }
+        }
+
+        public static int NumberOfCommonSC
+        {
+            get => _current != null ? _current.NumberOfCommonSC : _fallbackNumberOfCommonSc;
+            set
+            {
+                if (_current != null) _current.NumberOfCommonSC = value;
+                else _fallbackNumberOfCommonSc = value;
+            }
+        }
     }
 
     public enum GlobalNames

@@ -55,6 +55,10 @@ namespace SDRSharp.Tetra
         short[] _sdc = new short[480];
         private bool _haveErrors;
 
+		// Per-decoder runtime cache (LA, common SC, ...). This prevents cross-talk
+		// between multiple decoders running in parallel.
+		private readonly TetraRuntimeContext _runtime = new TetraRuntimeContext();
+
 
         public int NetworkTimeTN { get; internal set; }
         public int NetworkTimeFN { get; internal set; }
@@ -99,6 +103,11 @@ namespace SDRSharp.Tetra
 
         public int Process(Burst burst, float* audioOut)
         {
+			// Ensure all parsing/logging uses this decoder's runtime cache.
+			var prevRuntime = TetraRuntime.Current;
+			TetraRuntime.Current = _runtime;
+			try
+			{
             bool mmOnly = _panel != null && _panel.MmOnlyMode;
 
             var trafficChannel = 0;
@@ -126,7 +135,17 @@ namespace SDRSharp.Tetra
                     //Debug.WriteLine("burst err");
                     //Debug.Write(string.Format("ts:{0:0} fr:{1:00} Burst_Err", _networkTime.TimeSlot, _networkTime.Frame));
                 }
-                return trafficChannel;
+	            return trafficChannel;
+			}
+			finally
+			{
+				TetraRuntime.Current = prevRuntime;
+			}
+	        }
+			finally
+			{
+				TetraRuntime.Current = prevRuntime;
+			}
             }
 
             _haveErrors = false;
