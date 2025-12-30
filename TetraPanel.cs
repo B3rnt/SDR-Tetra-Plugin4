@@ -132,6 +132,8 @@ namespace SDRSharp.Tetra
 
         private const int CallTimeout = 10;
         private int _currentChPriority;
+        private readonly bool _externalIqMode;
+        internal Action<double>? AfcCorrectionRequested;
 
         #region Init and store settings
         public unsafe TetraPanel(ISharpControl control) : this(control, externalIq: false) { }
@@ -139,6 +141,7 @@ namespace SDRSharp.Tetra
         public unsafe TetraPanel(ISharpControl control, bool externalIq)
 
         {
+            _externalIqMode = externalIq;
             try
             {
                 InitializeComponent();
@@ -1433,7 +1436,7 @@ private static string GetRoleText(int timeslot, int nCommonSc, bool isActive)
 
         private void MainFrequencyLinkLabel_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
         {
-            _controlInterface.Frequency = _mainCell_Frequency;
+            if (!_externalIqMode && _controlInterface != null) _controlInterface.Frequency = _mainCell_Frequency;
         }
 
         #endregion
@@ -1754,7 +1757,7 @@ private static string GetRoleText(int timeslot, int nCommonSc, bool isActive)
                 if (_freqError > 200 || _freqError < -200)
                 {
                     _isAfcWork = true;
-                    _controlInterface.Frequency += (long)_freqError;
+                    if (_externalIqMode) { AfcCorrectionRequested?.Invoke(_freqError); } else { _controlInterface.Frequency += (long)_freqError; }
                     _freqError = 0;
                 }
             }

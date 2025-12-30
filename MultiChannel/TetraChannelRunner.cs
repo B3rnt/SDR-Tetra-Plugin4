@@ -16,6 +16,7 @@ namespace SDRSharp.Tetra.MultiChannel
 
         private double _lastFs;
         private long _lastCenterHz;
+        private double _afcHz; // per-channel AFC correction in Hz
 
         // Small reusable buffer for resampled output
         private UnsafeBuffer _outBuf;
@@ -36,6 +37,7 @@ namespace SDRSharp.Tetra.MultiChannel
             _settings = settings;
 
             _panel = new TetraPanel(_control, externalIq: true);
+            _panel.AfcCorrectionRequested = ApplyAfcCorrection;
 
             // Apply decoder host linkage (TetraPanel already exposes MmOnlyMode itself,
             // but TetraDecoder was patched to depend only on ITetraDecoderHost)
