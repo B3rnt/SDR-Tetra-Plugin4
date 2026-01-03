@@ -211,8 +211,9 @@ namespace SDRSharp.Tetra.MultiChannel
 
                 // Determine the current wideband span (RawIQ)
                 var centerHz = GetCenterFrequencyHz(_control);
-                double fs = 0;
-                try { fs = _control.SampleRate; } catch { }
+                // Sample rate is taken from the wideband IQ hook. (ISharpControl
+                // does not expose SampleRate in all SDR# builds.)
+                double fs = _wideSource.LastSampleRate;
                 if (fs <= 1)
                 {
                     MessageBox.Show("Kan sample rate niet bepalen. Start de receiver eerst en probeer opnieuw.");

@@ -19,6 +19,13 @@ namespace SDRSharp.Tetra.MultiChannel
         private Thread _worker;
         private volatile bool _running;
 
+        /// <summary>
+        /// Last observed IQ sample rate (Hz) from the wideband IQ stream.
+        /// Not all SDR# builds expose a control-level SampleRate property,
+        /// so we cache it here from the incoming IQ callback.
+        /// </summary>
+        public double LastSampleRate { get; private set; }
+
         public WideIqSource(ISharpControl control)
         {
             _control = control;
@@ -56,6 +63,8 @@ namespace SDRSharp.Tetra.MultiChannel
         private void OnIqReady(Complex* samples, double samplerate, int length)
         {
             if (length <= 0) return;
+
+            LastSampleRate = samplerate;
 
             var arr = ArrayPool<Complex>.Shared.Rent(length);
             for (int i = 0; i < length; i++)
