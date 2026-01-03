@@ -120,27 +120,6 @@ namespace SDRSharp.Tetra.MultiChannel
     }
 }
 
-                // Otherwise derive from Frequency and FrequencyShift (if present)
-                long freq = control.Frequency;
-                var pShift = control.GetType().GetProperty("FrequencyShift");
-                if (pShift != null)
-                {
-                    var sv = pShift.GetValue(control, null);
-                    long shift = 0;
-                    if (sv is int si) shift = si;
-                    else if (sv is long sl) shift = sl;
-                    else if (sv is double sd) shift = (long)sd;
-                    return freq - shift;
-                }
-
-                return freq;
-            }
-            catch
-            {
-                return control.Frequency;
-            }
-        }
-
         private void EnsureOutBuffer(int complexCount)
         {
             if (_outBuf != null && _outBuf.Length >= complexCount)

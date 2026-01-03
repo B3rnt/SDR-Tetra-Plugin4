@@ -339,49 +339,28 @@ namespace SDRSharp.Tetra.MultiChannel
 
         private bool _scanRunning;
 
-        private static long GetCenterFrequencyHz(ISharpControl control)
-{
-    try
-    {
-        // Prefer CenterFrequency if available (RawIQ is centered on hardware LO)
-        var pCenter = control.GetType().GetProperty("CenterFrequency");
-        if (pCenter != null)
-        {
-            var v = pCenter.GetValue(control, null);
-            if (v is long l) return l;
-            if (v is int i) return i;
-            if (v is double d) return (long)d;
-        }
+		private static long GetCenterFrequencyHz(ISharpControl control)
+		{
+			try
+			{
+				// Prefer CenterFrequency if available (RawIQ is centered on hardware LO)
+				var pCenter = control.GetType().GetProperty("CenterFrequency");
+				if (pCenter != null)
+				{
+					var v = pCenter.GetValue(control, null);
+					if (v is long l) return l;
+					if (v is int i) return i;
+					if (v is double d) return (long)d;
+				}
 
-        // Fall back to the currently tuned frequency. (Do NOT apply FrequencyShift here;
-        // different SDR# builds interpret it differently and it can break wide-IQ offsets.)
-        return control.Frequency;
-    }
-    catch
-    {
-        return control.Frequency;
-    }
-}
-
-                long freq = control.Frequency;
-                var pShift = control.GetType().GetProperty("FrequencyShift");
-                if (pShift != null)
-                {
-                    var sv = pShift.GetValue(control, null);
-                    long shift = 0;
-                    if (sv is int si) shift = si;
-                    else if (sv is long sl) shift = sl;
-                    else if (sv is double sd) shift = (long)sd;
-                    return freq - shift;
-                }
-
-                return freq;
-            }
-            catch
-            {
-                return control.Frequency;
-            }
-        }
+				// Fall back to the currently tuned frequency.
+				return control.Frequency;
+			}
+			catch
+			{
+				return control.Frequency;
+			}
+		}
 
 
 
