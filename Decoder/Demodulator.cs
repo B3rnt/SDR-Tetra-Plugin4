@@ -420,7 +420,7 @@ namespace SDRSharp.Tetra
             }
         }
 
-        private void FreeBuffers()
+        private unsafe void FreeBuffers()
         {
             _buffer?.Dispose();
             _buffer = null;
@@ -443,7 +443,7 @@ namespace SDRSharp.Tetra
             _stsBufferPtr = null;
         }
 
-        public void Dispose()
+        public unsafe void Dispose()
         {
             FreeBuffers();
             _matchedFilter = null;

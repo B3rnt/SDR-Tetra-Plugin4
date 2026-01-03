@@ -189,7 +189,7 @@ namespace SDRSharp.Tetra
             return logicChannel;
         }
 
-        public void Dispose()
+        public unsafe void Dispose()
         {
             _type1Buffer?.Dispose();
             _type1Buffer = null;

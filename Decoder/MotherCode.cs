@@ -405,7 +405,7 @@ namespace SDRSharp.Tetra
             return this._ber;
         }
 
-        public void Dispose()
+        public unsafe void Dispose()
         {
             _hamingLengthResult?.Dispose();
             _hamingLengthResult = null;

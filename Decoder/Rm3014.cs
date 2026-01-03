@@ -1196,7 +1196,7 @@ namespace SDRSharp.Tetra
             return noErrors;
         }
 
-        public void Dispose()
+        public unsafe void Dispose()
         {
             _syndromesDecoder?.Dispose();
             _syndromesDecoder = null;

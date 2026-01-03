@@ -335,7 +335,7 @@ namespace SDRSharp.Tetra
             }
         }
 
-        public void Dispose()
+        public unsafe void Dispose()
         {
             _tempBuffer?.Dispose();
             _tempBuffer = null;
