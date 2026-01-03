@@ -1,4 +1,4 @@
-﻿using SDRSharp.Common;
+using SDRSharp.Common;
 using SDRSharp.Radio;
 using System;
 using System.Buffers;
@@ -1898,11 +1898,15 @@ private static string GetRoleText(int timeslot, int nCommonSc, bool isActive)
             _cmceData.Add(data);
         }
 
-        protected override void Dispose(bool disposing)
+        // Multi-channel support: feed externally-downconverted IQ into this panel
+    public unsafe void FeedIq(Complex* samples, double samplerate, int length)
+    {
+        IQSamplesAvailable(samples, samplerate, length);
+    }
+        partial void DisposeCustom(bool disposing)
         {
-            if (disposing)
-            {
-                try { _decoder?.Dispose(); } catch { }
+            if (!disposing) return;
+try { _decoder?.Dispose(); } catch { }
                 _decoder = null;
 
                 try { (_demodulator as IDisposable)?.Dispose(); } catch { }
@@ -1916,14 +1920,7 @@ private static string GetRoleText(int timeslot, int nCommonSc, bool isActive)
                 _resampledAudio?.Dispose(); _resampledAudio = null; _resampledAudioPtr = null;
                 try { (_audioResampler as IDisposable)?.Dispose(); } catch { }
                 _audioResampler = null;
-            }
-            base.Dispose(disposing);
         }
 
-    // Multi-channel support: feed externally-downconverted IQ into this panel
-    public unsafe void FeedIq(Complex* samples, double samplerate, int length)
-    {
-        IQSamplesAvailable(samples, samplerate, length);
-    }
     }
 }
