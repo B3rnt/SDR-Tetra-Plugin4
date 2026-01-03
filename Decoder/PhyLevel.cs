@@ -337,6 +337,13 @@ namespace SDRSharp.Tetra
 
         public void Dispose()
         {
+            _tempBuffer?.Dispose();
+            _tempBuffer = null;
+            _tempBufferPtr = null;
+
+            _outBuffer?.Dispose();
+            _outBuffer = null;
+            _outBufferPtr = null;
         }
     }
 }

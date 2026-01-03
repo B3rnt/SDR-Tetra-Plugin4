@@ -2,7 +2,7 @@
 
 namespace SDRSharp.Tetra
 {
-    unsafe class Scrambler
+    unsafe class Scrambler : System.IDisposable
     {
         public const uint DefaultScramblerInit = 3;
         private const uint ScramblerPoly = 0xDB710641;
@@ -29,6 +29,13 @@ namespace SDRSharp.Tetra
                 _onesCountPtr[j] = (byte)counter;
             }
 
+        }
+
+        public void Dispose()
+        {
+            _onesCount?.Dispose();
+            _onesCount = null;
+            _onesCountPtr = null;
         }
         /* Descramble buffer */
         public void Process(byte* buffer, int length, uint scrambSequence)

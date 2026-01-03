@@ -98,7 +98,32 @@ namespace SDRSharp.Tetra
 
         public void Dispose()
         {
+            // Owned buffers
+            _bbBuffer?.Dispose();
+            _bbBuffer = null;
+            _bbBufferPtr = null;
 
+            _bkn1Buffer?.Dispose();
+            _bkn1Buffer = null;
+            _bkn1BufferPtr = null;
+
+            _bkn2Buffer?.Dispose();
+            _bkn2Buffer = null;
+            _bkn2BufferPtr = null;
+
+            _sb1Buffer?.Dispose();
+            _sb1Buffer = null;
+            _sb1BufferPtr = null;
+
+            // Owned processing stacks
+            (_phyLevel as IDisposable)?.Dispose();
+            _phyLevel = null;
+
+            (_lowerMac as IDisposable)?.Dispose();
+            _lowerMac = null;
+
+            (_parse as IDisposable)?.Dispose();
+            _parse = null;
         }
 
         public int Process(Burst burst, float* audioOut)

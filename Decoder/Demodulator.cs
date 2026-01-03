@@ -9,7 +9,7 @@ using System;
 
 namespace SDRSharp.Tetra
 {
-    internal class Demodulator
+    internal class Demodulator : System.IDisposable
     {
         private const float Pi34 = 2.356194f;
         private const float Pi14 = 0.7853982f;
@@ -205,6 +205,8 @@ namespace SDRSharp.Tetra
             burst.Length = 0;
             if (this._buffer == null || iqSamplerate != this._samplerateIn)
             {
+                // Sample-rate changed (or first init). Free old buffers to avoid leaks.
+                FreeBuffers();
                 this._samplerateIn = iqSamplerate;
                 this._samplerate = this._samplerateIn;
                 this._interpolation = 1;
@@ -416,6 +418,36 @@ namespace SDRSharp.Tetra
                 *bitsBuffer++ = (double)num < 0.0 ? (byte)1 : (byte)0;
                 *bitsBuffer++ = (double)Math.Abs(num) > 1.57079637050629 ? (byte)1 : (byte)0;
             }
+        }
+
+        private void FreeBuffers()
+        {
+            _buffer?.Dispose();
+            _buffer = null;
+            _bufferPtr = null;
+
+            _tempBuffer?.Dispose();
+            _tempBuffer = null;
+            _tempBufferPtr = null;
+
+            _nts1Buffer?.Dispose();
+            _nts1Buffer = null;
+            _nts1BufferPtr = null;
+
+            _nts2Buffer?.Dispose();
+            _nts2Buffer = null;
+            _nts2BufferPtr = null;
+
+            _stsBuffer?.Dispose();
+            _stsBuffer = null;
+            _stsBufferPtr = null;
+        }
+
+        public void Dispose()
+        {
+            FreeBuffers();
+            _matchedFilter = null;
+            _fsFilter = null;
         }
 
         public float FrequencyError { get; set; }

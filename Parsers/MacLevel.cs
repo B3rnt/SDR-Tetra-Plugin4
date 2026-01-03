@@ -6,7 +6,7 @@ using System.Linq;
 
 namespace SDRSharp.Tetra
 {
-    unsafe class MacLevel
+    unsafe class MacLevel : System.IDisposable
     {
         private LlcLevel _llc = new LlcLevel();
 
@@ -514,23 +514,30 @@ namespace SDRSharp.Tetra
                     //Debug.Write(" Broadcast_PDU");
                     offset = Global.ParseParams(channelData, offset, _sysInfoRules, result);
 
-                    // Cache LA globally (MM PDUs don't repeat LA; SDRtetra prints cached LA)
+                    // Cache LA for this decoder instance. Guard with CRC to avoid corrupt SYSINFO
+                    // overwriting the cached LA (which can make MM log lines show a wrong LA).
                     try
                     {
-                        int la = result.Value(GlobalNames.Location_Area);
-                        if (la > 0)
-                            TetraRuntime.CurrentLocationArea = la;
+                        if (channelData.CrcIsOk)
+                        {
+                            int la = result.Value(GlobalNames.Location_Area);
+                            if (la > 0)
+                                TetraRuntime.CurrentLocationArea = la;
+                        }
                     }
                     catch { }
 
-// Cache NumberOfCommon_SC globally (used for SCCH labeling in GUI)
-try
-{
-    int nsc = result.Value(GlobalNames.NumberOfCommon_SC);
-    if (nsc >= 0)
-        TetraRuntime.NumberOfCommonSC = nsc;
-}
-catch { }
+                    // Cache NumberOfCommon_SC as well (used for SCCH labeling in GUI)
+                    try
+                    {
+                        if (channelData.CrcIsOk)
+                        {
+                            int nsc = result.Value(GlobalNames.NumberOfCommon_SC);
+                            if (nsc >= 0)
+                                TetraRuntime.NumberOfCommonSC = nsc;
+                        }
+                    }
+                    catch { }
                     break;
             }
 
@@ -945,5 +952,15 @@ catch { }
         }
 
         #endregion
+
+        public void Dispose()
+        {
+            for (int i = 0; i < _tempBuffers.Length; i++)
+            {
+                _tempBuffers[i]?.Dispose();
+                _tempBuffers[i] = null;
+                _tempBuffersPtr[i] = null;
+            }
+        }
     }
 }

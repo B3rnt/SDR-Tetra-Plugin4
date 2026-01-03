@@ -8,7 +8,7 @@ using SDRSharp.Radio;
 
 namespace SDRSharp.Tetra
 {
-    internal class LowerMacLevel
+    internal class LowerMacLevel : System.IDisposable
     {
         private Scrambler _scrambler;
         private Deinterleave _deinterleaver;
@@ -191,6 +191,40 @@ namespace SDRSharp.Tetra
 
         public void Dispose()
         {
+            _type1Buffer?.Dispose();
+            _type1Buffer = null;
+            _type1BufferPtr = null;
+
+            _type2Buffer?.Dispose();
+            _type2Buffer = null;
+            _type2BufferPtr = null;
+
+            _type3Buffer?.Dispose();
+            _type3Buffer = null;
+            _type3BufferPtr = null;
+
+            _type4Buffer?.Dispose();
+            _type4Buffer = null;
+            _type4BufferPtr = null;
+
+            _tempBuffer?.Dispose();
+            _tempBuffer = null;
+            _tempBufferPtr = null;
+
+            // Owned helpers
+            (_scrambler as System.IDisposable)?.Dispose();
+            _scrambler = null;
+
+            (_mother as System.IDisposable)?.Dispose();
+            _mother = null;
+
+            (_rmd as System.IDisposable)?.Dispose();
+            _rmd = null;
+
+            // Stateless helpers; keep for clarity
+            _deinterleaver = null;
+            _depuncture = null;
+            _crc = null;
         }
     }
 }

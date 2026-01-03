@@ -3,7 +3,7 @@ using System;
 
 namespace SDRSharp.Tetra
 {
-    internal class Rm3014
+    internal class Rm3014 : System.IDisposable
     {
         private const int k = 14;
         private const int n = 30;
@@ -1194,6 +1194,21 @@ namespace SDRSharp.Tetra
             }
 
             return noErrors;
+        }
+
+        public void Dispose()
+        {
+            _syndromesDecoder?.Dispose();
+            _syndromesDecoder = null;
+            _syndromesDecoderPtr = null;
+
+            _hMatrixUint?.Dispose();
+            _hMatrixUint = null;
+            _hMatrixUintPtr = null;
+
+            _onesCounter?.Dispose();
+            _onesCounter = null;
+            _onesCounterPtr = null;
         }
     }
 }

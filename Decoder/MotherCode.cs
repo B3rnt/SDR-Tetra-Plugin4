@@ -8,7 +8,7 @@ using SDRSharp.Radio;
 
 namespace SDRSharp.Tetra
 {
-    internal class MotherCode
+    internal class MotherCode : System.IDisposable
     {
         private const int MotherCodeLength = 4;
         private const int CodedDataLength = 5;
@@ -403,6 +403,17 @@ namespace SDRSharp.Tetra
             }
             this._ber = (float)((double)(num13 - num3) / (double)(sourceLength - num3) * 100.0);
             return this._ber;
+        }
+
+        public void Dispose()
+        {
+            _hamingLengthResult?.Dispose();
+            _hamingLengthResult = null;
+            _hamingLengthPtr = null;
+
+            _tempBuffer?.Dispose();
+            _tempBuffer = null;
+            _tempBufferPtr = null;
         }
     }
 }

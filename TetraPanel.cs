@@ -601,8 +601,11 @@ _decodingIsStarted = false;
                 if (audioSamplerate != _audioSamplerate)
                 {
                     audioSamplerate = _audioSamplerate;
+                    // Recreate resampler/buffer on samplerate changes; free previous to avoid leaks.
+                    (_audioResampler as IDisposable)?.Dispose();
                     _audioResampler = new Resampler(8000, audioSamplerate);
 
+                    _resampledAudio?.Dispose();
                     _resampledAudio = UnsafeBuffer.Create((int)audioSamplerate, sizeof(float));
                     _resampledAudioPtr = (float*)_resampledAudio;
                 }
@@ -1893,6 +1896,28 @@ private static string GetRoleText(int timeslot, int nCommonSc, bool isActive)
                 _cmceData.RemoveAt(0);
 
             _cmceData.Add(data);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                try { _decoder?.Dispose(); } catch { }
+                _decoder = null;
+
+                try { (_demodulator as IDisposable)?.Dispose(); } catch { }
+                _demodulator = null;
+
+                _iqBuffer?.Dispose(); _iqBuffer = null; _iqBufferPtr = null;
+                _symbolsBuffer?.Dispose(); _symbolsBuffer = null; _symbolsBufferPtr = null;
+                _diBitsBuffer?.Dispose(); _diBitsBuffer = null; _diBitsBufferPtr = null;
+                _displayBuffer?.Dispose(); _displayBuffer = null; _displayBufferPtr = null;
+                _outAudioBuffer?.Dispose(); _outAudioBuffer = null; _outAudioBufferPtr = null;
+                _resampledAudio?.Dispose(); _resampledAudio = null; _resampledAudioPtr = null;
+                try { (_audioResampler as IDisposable)?.Dispose(); } catch { }
+                _audioResampler = null;
+            }
+            base.Dispose(disposing);
         }
 
     // Multi-channel support: feed externally-downconverted IQ into this panel
