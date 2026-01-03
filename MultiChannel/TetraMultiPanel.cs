@@ -85,7 +85,7 @@ namespace SDRSharp.Tetra.MultiChannel
             _add = new Button { Text = "Toevoegen", Width = 90 };
             _remove = new Button { Text = "Verwijderen", Width = 90 };
             _save = new Button { Text = "Opslaan", Width = 70 };
-            _scanMcch = new Button { Text = \"Scan MCCH\", Width = 90 };
+            _scanMcch = new Button { Text = "Scan MCCH", Width = 90 };
 
             leftTop.Controls.AddRange(new Control[] { _add, _remove, _save, _scanMcch });
 
