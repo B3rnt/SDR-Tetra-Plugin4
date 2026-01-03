@@ -7,6 +7,8 @@
         /// </summary>
         private System.ComponentModel.IContainer components = null;
 
+        partial void DisposeCustom(bool disposing);
+
         /// <summary>
         /// Clean up any resources being used.
         /// </summary>
@@ -17,6 +19,7 @@
             {
                 components.Dispose();
             }
+            DisposeCustom(disposing);
             base.Dispose(disposing);
         }
 
