@@ -270,7 +270,7 @@ namespace SDRSharp.Tetra.MultiChannel
                                 Enabled = true,
                                 // Enable AGC for probes so they lock more reliably across varying levels
                                 AgcEnabled = true,
-                                AgcTargetRms = 0.25
+                                AgcTargetRms = 0.25f
                             };
 
                             var r = new TetraChannelRunner(_control, tmp);
