@@ -232,17 +232,19 @@ namespace SDRSharp.Tetra.MultiChannel
                 end = (end / step) * step;
 
                 var existing = new HashSet<long>(_channels.Select(c => c.FrequencyHz));
+
+                // Scan ALL 25 kHz raster frequencies within the visible IQ bandwidth.
+                // (We will only *add* the ones that are not already present.)
                 var candidates = new List<long>();
                 for (long f = start; f <= end; f += step)
                 {
                     if (f <= 0) continue;
-                    if (existing.Contains(f)) continue;
                     candidates.Add(f);
                 }
 
                 if (candidates.Count == 0)
                 {
-                    MessageBox.Show("Geen nieuwe 25 kHz kanalen binnen de huidige bandbreedte.");
+                    MessageBox.Show("Geen 25 kHz kanalen binnen de huidige bandbreedte (controleer sample rate / center)." );
                     return;
                 }
 
@@ -250,7 +252,7 @@ namespace SDRSharp.Tetra.MultiChannel
 
                 // Scan in small batches to avoid CPU spikes
                 const int batchSize = 12;
-                const int batchTimeoutMs = 3000;
+                const int batchTimeoutMs = 6000;
 
                 for (int i = 0; i < candidates.Count; i += batchSize)
                 {
@@ -266,7 +268,9 @@ namespace SDRSharp.Tetra.MultiChannel
                                 Name = "SCAN",
                                 FrequencyHz = f,
                                 Enabled = true,
-                                AgcEnabled = false
+                                // Enable AGC for probes so they lock more reliably across varying levels
+                                AgcEnabled = true,
+                                AgcTargetRms = 0.25
                             };
 
                             var r = new TetraChannelRunner(_control, tmp);
@@ -294,11 +298,16 @@ namespace SDRSharp.Tetra.MultiChannel
                     }
                 }
 
-                // Add discovered MCCH channels
+                // Add discovered MCCH channels (only the missing ones)
                 var toAdd = found.Where(f => !existing.Contains(f)).OrderBy(f => f).ToList();
-                if (toAdd.Count == 0)
+                if (found.Count == 0)
                 {
                     MessageBox.Show("Geen MCCH gevonden binnen de huidige bandbreedte.");
+                    return;
+                }
+                if (toAdd.Count == 0)
+                {
+                    MessageBox.Show($"MCCH gevonden binnen de huidige bandbreedte ({found.Count}), maar ze staan al in de lijst.");
                     return;
                 }
 
