@@ -21,6 +21,7 @@ namespace SDRSharp.Tetra.MultiChannel
         private Button _add;
         private Button _remove;
         private Button _save;
+        private Button _scanMcch;
         private TabControl _tabs;
 
         public TetraMultiPanel(ISharpControl control)
@@ -84,8 +85,9 @@ namespace SDRSharp.Tetra.MultiChannel
             _add = new Button { Text = "Toevoegen", Width = 90 };
             _remove = new Button { Text = "Verwijderen", Width = 90 };
             _save = new Button { Text = "Opslaan", Width = 70 };
+            _scanMcch = new Button { Text = \"Scan MCCH\", Width = 90 };
 
-            leftTop.Controls.AddRange(new Control[] { _add, _remove, _save });
+            leftTop.Controls.AddRange(new Control[] { _add, _remove, _save, _scanMcch });
 
             var left = new Panel { Dock = DockStyle.Fill };
             left.Controls.Add(_grid);
@@ -101,6 +103,7 @@ namespace SDRSharp.Tetra.MultiChannel
             _add.Click += (_, __) => AddChannel();
             _remove.Click += (_, __) => RemoveSelected();
             _save.Click += (_, __) => SaveAll();
+            _scanMcch.Click += (_, __) => ScanMcchAndAddChannels();
             _grid.SelectionChanged += (_, __) => SyncSelectedTab();
         }
 
@@ -195,6 +198,172 @@ namespace SDRSharp.Tetra.MultiChannel
         {
             ChannelSettingsStore.Save(_channels.ToList());
         }
+
+
+        private async void ScanMcchAndAddChannels()
+        {
+            if (_scanRunning) return;
+            _scanRunning = true;
+
+            try
+            {
+                _add.Enabled = _remove.Enabled = _save.Enabled = _scanMcch.Enabled = false;
+
+                // Determine the current wideband span (RawIQ)
+                var centerHz = GetCenterFrequencyHz(_control);
+                double fs = 0;
+                try { fs = _control.SampleRate; } catch { }
+                if (fs <= 1)
+                {
+                    MessageBox.Show("Kan sample rate niet bepalen. Start de receiver eerst en probeer opnieuw.");
+                    return;
+                }
+
+                // Candidate frequencies: 25 kHz raster within the currently open IQ bandwidth
+                var step = 25_000L;
+                var half = (long)(fs / 2.0);
+                var guard = 40_000L; // keep away from edges where filters roll off
+                var start = centerHz - half + guard;
+                var end = centerHz + half - guard;
+
+                // Snap to 25 kHz grid
+                start = (start / step) * step;
+                end = (end / step) * step;
+
+                var existing = new HashSet<long>(_channels.Select(c => c.FrequencyHz));
+                var candidates = new List<long>();
+                for (long f = start; f <= end; f += step)
+                {
+                    if (f <= 0) continue;
+                    if (existing.Contains(f)) continue;
+                    candidates.Add(f);
+                }
+
+                if (candidates.Count == 0)
+                {
+                    MessageBox.Show("Geen nieuwe 25 kHz kanalen binnen de huidige bandbreedte.");
+                    return;
+                }
+
+                var found = new HashSet<long>();
+
+                // Scan in small batches to avoid CPU spikes
+                const int batchSize = 12;
+                const int batchTimeoutMs = 3000;
+
+                for (int i = 0; i < candidates.Count; i += batchSize)
+                {
+                    var batch = candidates.Skip(i).Take(batchSize).ToList();
+                    var runners = new List<TetraChannelRunner>();
+
+                    try
+                    {
+                        foreach (var f in batch)
+                        {
+                            var tmp = new ChannelSettings
+                            {
+                                Name = "SCAN",
+                                FrequencyHz = f,
+                                Enabled = true,
+                                AgcEnabled = false
+                            };
+
+                            var r = new TetraChannelRunner(_control, tmp);
+                            r.Panel.SysInfoBroadcastReceived += () =>
+                            {
+                                lock (found) { found.Add(f); }
+                            };
+
+                            runners.Add(r);
+                            _wideSource.AddSink(r);
+                        }
+
+                        // Wait a bit so each probe can catch a broadcast burst
+                        var sw = System.Diagnostics.Stopwatch.StartNew();
+                        while (sw.ElapsedMilliseconds < batchTimeoutMs)
+                            await System.Threading.Tasks.Task.Delay(100);
+                    }
+                    finally
+                    {
+                        foreach (var r in runners)
+                        {
+                            try { _wideSource.RemoveSink(r); } catch { }
+                            try { r.Dispose(); } catch { }
+                        }
+                    }
+                }
+
+                // Add discovered MCCH channels
+                var toAdd = found.Where(f => !existing.Contains(f)).OrderBy(f => f).ToList();
+                if (toAdd.Count == 0)
+                {
+                    MessageBox.Show("Geen MCCH gevonden binnen de huidige bandbreedte.");
+                    return;
+                }
+
+                foreach (var f in toAdd)
+                {
+                    var ch = new ChannelSettings
+                    {
+                        Name = "MCCH-" + FormatHz(f),
+                        FrequencyHz = f,
+                        Enabled = true
+                    };
+                    _channels.Add(ch);
+                    EnsureRunner(ch);
+                }
+
+                SaveAll();
+                MessageBox.Show($"MCCH gevonden en toegevoegd: {toAdd.Count} kanaal/kanalen.");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Scan MCCH fout: " + ex.Message);
+            }
+            finally
+            {
+                _add.Enabled = _remove.Enabled = _save.Enabled = _scanMcch.Enabled = true;
+                _scanRunning = false;
+            }
+        }
+
+        private bool _scanRunning;
+
+        private static long GetCenterFrequencyHz(ISharpControl control)
+        {
+            try
+            {
+                var pCenter = control.GetType().GetProperty("CenterFrequency");
+                if (pCenter != null)
+                {
+                    var v = pCenter.GetValue(control, null);
+                    if (v is long l) return l;
+                    if (v is int i) return i;
+                    if (v is double d) return (long)d;
+                }
+
+                long freq = control.Frequency;
+                var pShift = control.GetType().GetProperty("FrequencyShift");
+                if (pShift != null)
+                {
+                    var sv = pShift.GetValue(control, null);
+                    long shift = 0;
+                    if (sv is int si) shift = si;
+                    else if (sv is long sl) shift = sl;
+                    else if (sv is double sd) shift = (long)sd;
+                    return freq - shift;
+                }
+
+                return freq;
+            }
+            catch
+            {
+                return control.Frequency;
+            }
+        }
+
+
+
 
         public void Shutdown()
         {

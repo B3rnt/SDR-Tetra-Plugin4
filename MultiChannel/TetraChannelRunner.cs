@@ -32,6 +32,8 @@ namespace SDRSharp.Tetra.MultiChannel
 
         public UserControl Gui => _panel;
 
+        public TetraPanel Panel => _panel;
+
         public TetraChannelRunner(ISharpControl control, ChannelSettings settings)
         {
             _control = control;
@@ -39,6 +41,7 @@ namespace SDRSharp.Tetra.MultiChannel
 
 	        _panel = new TetraPanel(_control, externalIq: true);
 	        _panel.AfcCorrectionRequested = ApplyAfcCorrection;
+            _panel.SetExternalFrequency(settings.FrequencyHz);
 
             // Apply decoder host linkage (TetraPanel already exposes MmOnlyMode itself,
             // but TetraDecoder was patched to depend only on ITetraDecoderHost)
@@ -85,6 +88,7 @@ namespace SDRSharp.Tetra.MultiChannel
         public void UpdateSettings(ChannelSettings settings)
         {
             _settings = settings;
+            _panel.SetExternalFrequency(settings.FrequencyHz);
             _agc.Enabled = settings.AgcEnabled;
             _agc.TargetRms = settings.AgcTargetRms;
             _agc.Attack = settings.AgcAttack;

@@ -135,6 +135,20 @@ namespace SDRSharp.Tetra
         private readonly bool _externalIqMode;
         internal Action<double> AfcCorrectionRequested;
 
+        // In multi-channel (external IQ) mode, the panel is fed IQ for a specific channel frequency,
+        // while the SDR# control frequency remains at the wideband center. We therefore need an
+        // explicit "effective" tuned frequency for carrier index calculations and UI labels.
+        private long _externalFrequencyHz;
+        public void SetExternalFrequency(long hz) { _externalFrequencyHz = hz; }
+        private long EffectiveFrequencyHz => _externalIqMode ? _externalFrequencyHz : (_controlInterface != null ? _controlInterface.Frequency : 0);
+
+        /// <summary>
+        /// Fired when a broadcast (MCCH) system information PDU was decoded on this channel.
+        /// Useful for wide-band scanning to discover carriers with MCCH.
+        /// </summary>
+        public event Action SysInfoBroadcastReceived;
+
+
         #region Init and store settings
         public unsafe TetraPanel(ISharpControl control) : this(control, externalIq: false) { }
 
@@ -1005,8 +1019,11 @@ _decodingIsStarted = false;
                 _mainCell_Frequency = Global.FrequencyCalc(isFull, carrier, band, offset);
                 _mainCell_Carrier = carrier;
 
-                _currentCell_Carrier = Global.CarrierCalc(_controlInterface.Frequency);
-            }
+                _currentCell_Carrier = Global.CarrierCalc(EffectiveFrequencyHz);
+            
+
+                try { SysInfoBroadcastReceived?.Invoke(); } catch { }
+}
         }
 
         #endregion
@@ -1016,7 +1033,7 @@ _decodingIsStarted = false;
         private void MarkerTimer_Tick(object sender, EventArgs e)
         {
 // Reset UI state when tuning to a new frequency (prevents showing MCCH/SCCH from previous carrier)
-long freqHz = _controlInterface != null ? _controlInterface.Frequency : 0;
+long freqHz = EffectiveFrequencyHz;
 if (_lastUiFrequencyHz < 0)
 {
     _lastUiFrequencyHz = freqHz;
@@ -1178,7 +1195,7 @@ else if (Math.Abs(freqHz - _lastUiFrequencyHz) > 100) // >100 Hz change = retune
                 mainCarrierLabel.Text = _mainCell_Carrier.ToString();
                 mainFrequencyLinkLabel.Text = string.Format("{0:0,0.000###} MHz", _mainCell_Frequency * 0.000001m);
                 currentCarrierLabel.Text = _currentCell_Carrier.ToString();
-                currentFrequencyLabel.Text = string.Format("{0:0,0.000###} MHz", _controlInterface.Frequency * 0.000001m);
+                currentFrequencyLabel.Text = string.Format("{0:0,0.000###} MHz", EffectiveFrequencyHz * 0.000001m);
             }
         }
 
