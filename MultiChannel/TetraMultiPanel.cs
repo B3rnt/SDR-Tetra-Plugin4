@@ -214,6 +214,9 @@ namespace SDRSharp.Tetra.MultiChannel
             if (_scanRunning) return;
             _scanRunning = true;
 
+            ScanProgressForm progress = null;
+            System.Threading.CancellationTokenSource cts = null;
+
             try
             {
                 _add.Enabled = _remove.Enabled = _save.Enabled = _scanMcch.Enabled = false;
@@ -229,10 +232,12 @@ namespace SDRSharp.Tetra.MultiChannel
                     return;
                 }
 
-                // Candidate frequencies: 12.5 kHz raster within the currently open IQ bandwidth
+                // Candidate frequencies.
+                // Default (fast): scan only frequencies already present in the list.
+                // Hold CTRL while clicking "Scan MCCH" to scan the full 12.5 kHz raster within the visible IQ bandwidth.
                 var step = 12_500L; // TETRA carriers are on a 12.5 kHz raster (e.g. 390.9625 MHz)
                 var half = (long)(fs / 2.0);
-                var guard = 40_000L; // keep away from edges where filters roll off
+                var guard = 10_000L; // keep away from edges where filters roll off
                 var start = centerHz - half + guard;
                 var end = centerHz + half - guard;
 
@@ -242,20 +247,47 @@ namespace SDRSharp.Tetra.MultiChannel
 
                 var existing = new HashSet<long>(_channels.Select(c => c.FrequencyHz));
 
-                // Scan ALL 12.5 kHz raster frequencies within the visible IQ bandwidth.
-                // (We will only *add* the ones that are not already present.)
-                var candidates = new List<long>();
-                for (long f = start; f <= end; f += step)
+                bool fullRaster = (Control.ModifierKeys & Keys.Control) != 0;
+
+                List<long> candidates;
+                if (!fullRaster)
                 {
-                    if (f <= 0) continue;
-                    candidates.Add(f);
+                    // Scan only the frequencies already present in the channel list (much faster).
+                    candidates = _channels.Select(c => c.FrequencyHz)
+                        .Where(f => f >= start && f <= end)
+                        .Distinct()
+                        .OrderBy(f => f)
+                        .ToList();
+
+                    if (candidates.Count == 0)
+                        fullRaster = true;
+                }
+
+                if (fullRaster)
+                {
+                    // Scan ALL 12.5 kHz raster frequencies within the visible IQ bandwidth.
+                    candidates = new List<long>();
+                    for (long f = start; f <= end; f += step)
+                    {
+                        if (f <= 0) continue;
+                        candidates.Add(f);
+                    }
                 }
 
                 if (candidates.Count == 0)
                 {
-                    MessageBox.Show("Geen 12,5 kHz kanalen binnen de huidige bandbreedte (controleer sample rate / center)." );
+                    MessageBox.Show("Geen kanalen binnen de huidige bandbreedte (controleer sample rate / center). Tip: voeg eerst frequenties toe aan de lijst, of houd CTRL ingedrukt om het volledige raster te scannen." );
                     return;
                 }
+
+
+                progress = new ScanProgressForm();
+                progress.SetMode(fullRaster ? "Raster (CTRL ingedrukt)" : "Lijst (snel)");
+                progress.SetTotal(candidates.Count);
+                progress.Show(this);
+
+                cts = new System.Threading.CancellationTokenSource();
+                progress.Canceled += () => { try { cts.Cancel(); } catch { } };
 
                 var found = new HashSet<long>();
 
@@ -263,7 +295,7 @@ namespace SDRSharp.Tetra.MultiChannel
                 // Default is 2; user can raise it in the UI.
                 // Faster MCCH scan: TETRA SYSINFO repeats frequently; waiting 15-20s per probe
                 // makes scans feel "stuck" and is usually unnecessary.
-                const int probeTimeoutMs = 4_000;
+                const int probeTimeoutMs = 2_500;
                 int parallel = 2;
                 try { parallel = Math.Max(1, (int)_scanParallel.Value); } catch { }
 
@@ -272,7 +304,8 @@ namespace SDRSharp.Tetra.MultiChannel
 
                 async System.Threading.Tasks.Task ProbeOneAsync(long f)
                 {
-                    await sem.WaitAsync().ConfigureAwait(false);
+                    try { await sem.WaitAsync(cts.Token).ConfigureAwait(false); }
+                    catch { return; }
                     try
                     {
                         bool got = false;
@@ -292,7 +325,7 @@ namespace SDRSharp.Tetra.MultiChannel
                         TetraChannelRunner r = null;
                         try
                         {
-                            r = await UiInvokeAsync(() => new TetraChannelRunner(_control, tmp)).ConfigureAwait(false);
+                            r = await UiInvokeAsync(() => new TetraChannelRunner(_control, tmp, persistSettingsOnDispose: false)).ConfigureAwait(false);
                         }
                         catch
                         {
@@ -301,36 +334,39 @@ namespace SDRSharp.Tetra.MultiChannel
                         }
                         try
                         {
-                            r.Panel.SetDemodulatorEnabled(true);
+                            try { progress?.ReportStart(f); } catch { }
 
                             r.Panel.SysInfoBroadcastReceived += () =>
                             {
-                                // Be permissive: if we decoded SYSINFO and it contains main carrier info,
-                                // accept it. (A strict Hz-level compare is brittle due to rounding/ppm/AFC.)
-                                if (r.Panel.HasMainCarrierInfo)
-                                {
-                                    mainHz = r.Panel.MainCellFrequencyHz;
-                                    got = true;
-                                }
+                                // Broadcast SYSINFO seen => we are on (or very near) an MCCH-capable carrier.
+                                got = true;
+                                var mh = r.Panel.MainCellFrequencyHz;
+                                if (mh > 0) System.Threading.Interlocked.Exchange(ref mainHz, mh);
+                                try { progress?.ReportSysInfo(f, mh); } catch { }
                             };
 
                             lock (_sinkLock) { _wideSource.AddSink(r); }
 
-                            var sw = System.Diagnostics.Stopwatch.StartNew();
-                            while (!got && sw.ElapsedMilliseconds < probeTimeoutMs)
-                                await System.Threading.Tasks.Task.Delay(50).ConfigureAwait(false);
+                            // Enable demodulator on UI thread (WinForms control). Give the sink a moment to start feeding IQ.
+                            try { await System.Threading.Tasks.Task.Delay(75, cts.Token).ConfigureAwait(false); } catch { }
+                            try { await UiInvokeAsync(() => { r.Panel.SetDemodulatorEnabled(true); return 0; }).ConfigureAwait(false); } catch { }
 
-                            if (!got && r.Panel.HasMainCarrierInfo)
+                            var sw = System.Diagnostics.Stopwatch.StartNew();
+                            while (!got && sw.ElapsedMilliseconds < probeTimeoutMs && !cts.IsCancellationRequested)
+                                await System.Threading.Tasks.Task.Delay(50, cts.Token).ConfigureAwait(false);
+
+                            if (!got)
                             {
-                                // Fallback: if we already have fresh SYSINFO, accept it.
+                                // Fallback: if SYSINFO was decoded very recently, accept it.
                                 var ticks = r.Panel.LastSysInfoUtcTicks;
                                 if (ticks != 0)
                                 {
                                     var age = new TimeSpan(DateTime.UtcNow.Ticks - ticks);
-                                    if (age.TotalMilliseconds <= probeTimeoutMs + 500)
+                                    if (age.TotalMilliseconds <= probeTimeoutMs + 750)
                                     {
-                                        mainHz = r.Panel.MainCellFrequencyHz;
                                         got = true;
+                                        var mh = r.Panel.MainCellFrequencyHz;
+                                        if (mh > 0) System.Threading.Interlocked.Exchange(ref mainHz, mh);
                                     }
                                 }
                             }
@@ -342,12 +378,21 @@ namespace SDRSharp.Tetra.MultiChannel
                                 var addHz = mainHz > 0 ? mainHz : f;
                                 addHz = (addHz / step) * step;
                                 lock (found) { found.Add(addHz); }
-                            }
-                        }
+                                try { progress?.ReportFound(f, addHz); } catch { }
+                            }                        }
                         finally
                         {
                             try { lock (_sinkLock) { _wideSource.RemoveSink(r); } } catch { }
-                            try { r.Dispose(); } catch { }
+                            try
+                            {
+                                // Dispose GUI controls on UI thread to avoid WinForms cross-thread issues.
+                                await UiInvokeAsync(() => { try { r.Dispose(); } catch { } return 0; }).ConfigureAwait(false);
+                            }
+                            catch
+                            {
+                                try { r.Dispose(); } catch { }
+                            }
+                            try { progress?.ReportEnd(f, got, mainHz); } catch { }
                         }
                     }
                     finally
@@ -386,7 +431,14 @@ namespace SDRSharp.Tetra.MultiChannel
                 foreach (var f in candidates)
                     tasks.Add(ProbeOneAsync(f));
 
-                await System.Threading.Tasks.Task.WhenAll(tasks);
+                try { await System.Threading.Tasks.Task.WhenAll(tasks); }
+                catch { }
+
+                if (cts != null && cts.IsCancellationRequested)
+                {
+                    MessageBox.Show("Scan geannuleerd.");
+                    return;
+                }
 
                 // Add discovered MCCH channels (only the missing ones)
                 var toAdd = found.Where(f => !existing.Contains(f)).OrderBy(f => f).ToList();
@@ -395,9 +447,26 @@ namespace SDRSharp.Tetra.MultiChannel
                     MessageBox.Show("Geen MCCH gevonden binnen de huidige bandbreedte.");
                     return;
                 }
+
+                // Mark existing channels that match discovered MCCH carriers (useful when scanning the list).
+                int marked = 0;
+                foreach (var ch in _channels)
+                {
+                    if (found.Contains(ch.FrequencyHz))
+                    {
+                        if (string.IsNullOrWhiteSpace(ch.Name) || !ch.Name.StartsWith("MCCH", StringComparison.OrdinalIgnoreCase))
+                        {
+                            ch.Name = "MCCH-" + FormatHz(ch.FrequencyHz);
+                            marked++;
+                        }
+                    }
+                }
+                if (marked > 0) OnGridChanged();
+
                 if (toAdd.Count == 0)
                 {
-                    MessageBox.Show($"MCCH gevonden binnen de huidige bandbreedte ({found.Count}), maar ze staan al in de lijst.");
+                    SaveAll();
+                    MessageBox.Show($"MCCH gevonden: {found.Count}. {marked} bestaande kanaal/kanalen gemarkeerd als MCCH.");
                     return;
                 }
 
@@ -414,7 +483,7 @@ namespace SDRSharp.Tetra.MultiChannel
                 }
 
                 SaveAll();
-                MessageBox.Show($"MCCH gevonden en toegevoegd: {toAdd.Count} kanaal/kanalen.");
+                MessageBox.Show($"MCCH gevonden: {found.Count}. Toegevoegd: {toAdd.Count}. Gemarkeerd: {marked}.");
             }
             catch (Exception ex)
             {
@@ -422,6 +491,10 @@ namespace SDRSharp.Tetra.MultiChannel
             }
             finally
             {
+                try { progress?.Close(); } catch { }
+                try { progress?.Dispose(); } catch { }
+                try { cts?.Dispose(); } catch { }
+
                 _add.Enabled = _remove.Enabled = _save.Enabled = _scanMcch.Enabled = true;
                 _scanRunning = false;
             }
@@ -488,6 +561,116 @@ namespace SDRSharp.Tetra.MultiChannel
             }
             try { _wideSource.Dispose(); } catch { }
         }
+
+        private sealed class ScanProgressForm : Form
+        {
+            private readonly Label _mode;
+            private readonly Label _status;
+            private readonly ProgressBar _bar;
+            private readonly ListBox _log;
+            private readonly Button _cancel;
+
+            private int _total;
+            private int _done;
+
+            public event Action Canceled;
+
+            public ScanProgressForm()
+            {
+                Text = "Scan MCCH";
+                StartPosition = FormStartPosition.CenterParent;
+                FormBorderStyle = FormBorderStyle.FixedDialog;
+                MinimizeBox = false;
+                MaximizeBox = false;
+                Width = 520;
+                Height = 420;
+
+                _mode = new Label { Dock = DockStyle.Top, Height = 20, Text = "", Padding = new Padding(8, 4, 8, 0) };
+                _status = new Label { Dock = DockStyle.Top, Height = 20, Text = "", Padding = new Padding(8, 0, 8, 0) };
+                _bar = new ProgressBar { Dock = DockStyle.Top, Height = 18, Minimum = 0, Maximum = 100 };
+                _log = new ListBox { Dock = DockStyle.Fill };
+                _cancel = new Button { Dock = DockStyle.Bottom, Height = 32, Text = "Annuleren" };
+
+                _cancel.Click += (_, __) => { try { Canceled?.Invoke(); } catch { } };
+
+                Controls.Add(_log);
+                Controls.Add(_cancel);
+                Controls.Add(_bar);
+                Controls.Add(_status);
+                Controls.Add(_mode);
+            }
+
+            public void SetMode(string mode)
+            {
+                SafeUi(() => _mode.Text = mode ?? "");
+            }
+
+            public void SetTotal(int total)
+            {
+                _total = Math.Max(1, total);
+                SafeUi(() =>
+                {
+                    _bar.Value = 0;
+                    _status.Text = $"0 / {_total}";
+                });
+            }
+
+            public void ReportStart(long fHz)
+            {
+                SafeUi(() =>
+                {
+                    _status.Text = $"{_done} / {_total}  |  Probe: {FormatHz(fHz)}";
+                });
+            }
+
+            public void ReportSysInfo(long probedHz, long mainHz)
+            {
+                SafeUi(() =>
+                {
+                    AddLine($"SYSINFO op {FormatHz(probedHz)}  (main: {(mainHz > 0 ? FormatHz(mainHz) : "?")})");
+                });
+            }
+
+            public void ReportFound(long probedHz, long addHz)
+            {
+                SafeUi(() =>
+                {
+                    AddLine($"MCCH gevonden: {FormatHz(addHz)}  (probe: {FormatHz(probedHz)})");
+                });
+            }
+
+            public void ReportEnd(long probedHz, bool ok, long mainHz)
+            {
+                _done++;
+                SafeUi(() =>
+                {
+                    _bar.Value = Math.Min(100, (int)Math.Round((_done * 100.0) / _total));
+                    _status.Text = $"{_done} / {_total}  |  Laatste: {FormatHz(probedHz)}  |  {(ok ? "OK" : "-")}";
+                });
+            }
+
+            private void AddLine(string line)
+            {
+                if (_log.Items.Count > 300)
+                    _log.Items.RemoveAt(0);
+                _log.Items.Add(line);
+                _log.TopIndex = _log.Items.Count - 1;
+            }
+
+            private void SafeUi(Action a)
+            {
+                try
+                {
+                    if (IsHandleCreated && InvokeRequired) BeginInvoke(a);
+                    else a();
+                }
+                catch
+                {
+                    // ignore
+                }
+            }
+        }
+
 
         private static string FormatHz(long hz)
         {

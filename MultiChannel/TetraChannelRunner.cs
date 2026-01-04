@@ -13,6 +13,7 @@ namespace SDRSharp.Tetra.MultiChannel
 
         private readonly ComplexDdcResampler _ddc;
         private readonly SimpleAgc _agc;
+        private readonly bool _persistSettingsOnDispose;
 
         private double _lastFs;
         private long _lastCenterHz;
@@ -34,10 +35,11 @@ namespace SDRSharp.Tetra.MultiChannel
 
         public TetraPanel Panel => _panel;
 
-        public TetraChannelRunner(ISharpControl control, ChannelSettings settings)
+        public TetraChannelRunner(ISharpControl control, ChannelSettings settings, bool persistSettingsOnDispose = true)
         {
             _control = control;
             _settings = settings;
+            _persistSettingsOnDispose = persistSettingsOnDispose;
 
 	        _panel = new TetraPanel(_control, externalIq: true);
 	        _panel.AfcCorrectionRequested = ApplyAfcCorrection;
@@ -194,7 +196,10 @@ namespace SDRSharp.Tetra.MultiChannel
 
         public void Dispose()
         {
-            try { _panel?.SaveSettings(); } catch { }
+            if (_persistSettingsOnDispose)
+            {
+                try { _panel?.SaveSettings(); } catch { }
+            }
             try { _outBuf?.Dispose(); } catch { }
         }
     }
