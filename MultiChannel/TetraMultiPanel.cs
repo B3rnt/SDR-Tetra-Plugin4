@@ -220,20 +220,20 @@ namespace SDRSharp.Tetra.MultiChannel
                     return;
                 }
 
-                // Candidate frequencies: 25 kHz raster within the currently open IQ bandwidth
-                var step = 25_000L;
+                // Candidate frequencies: 12.5 kHz raster within the currently open IQ bandwidth
+                var step = 12_500L; // TETRA carriers are on a 12.5 kHz raster (e.g. 390.9625 MHz)
                 var half = (long)(fs / 2.0);
                 var guard = 40_000L; // keep away from edges where filters roll off
                 var start = centerHz - half + guard;
                 var end = centerHz + half - guard;
 
-                // Snap to 25 kHz grid
+                // Snap to 12.5 kHz grid
                 start = (start / step) * step;
                 end = (end / step) * step;
 
                 var existing = new HashSet<long>(_channels.Select(c => c.FrequencyHz));
 
-                // Scan ALL 25 kHz raster frequencies within the visible IQ bandwidth.
+                // Scan ALL 12.5 kHz raster frequencies within the visible IQ bandwidth.
                 // (We will only *add* the ones that are not already present.)
                 var candidates = new List<long>();
                 for (long f = start; f <= end; f += step)
@@ -244,7 +244,7 @@ namespace SDRSharp.Tetra.MultiChannel
 
                 if (candidates.Count == 0)
                 {
-                    MessageBox.Show("Geen 25 kHz kanalen binnen de huidige bandbreedte (controleer sample rate / center)." );
+                    MessageBox.Show("Geen 12,5 kHz kanalen binnen de huidige bandbreedte (controleer sample rate / center)." );
                     return;
                 }
 
