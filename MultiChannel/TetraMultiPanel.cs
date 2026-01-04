@@ -261,7 +261,9 @@ namespace SDRSharp.Tetra.MultiChannel
 
                 // Parallel probing (bounded). Too many probes will starve existing decoders.
                 // Default is 2; user can raise it in the UI.
-                const int probeTimeoutMs = 15_000;
+                // Faster MCCH scan: TETRA SYSINFO repeats frequently; waiting 15-20s per probe
+                // makes scans feel "stuck" and is usually unnecessary.
+                const int probeTimeoutMs = 4_000;
                 int parallel = 2;
                 try { parallel = Math.Max(1, (int)_scanParallel.Value); } catch { }
 
@@ -274,6 +276,7 @@ namespace SDRSharp.Tetra.MultiChannel
                     try
                     {
                         bool got = false;
+                        long mainHz = 0;
                         var tmp = new ChannelSettings
                         {
                             Name = "SCAN",
@@ -290,30 +293,43 @@ namespace SDRSharp.Tetra.MultiChannel
 
                             r.Panel.SysInfoBroadcastReceived += () =>
                             {
-                                if (r.Panel.HasMainCarrierInfo && Math.Abs(r.Panel.MainCellFrequencyHz - f) < 2)
+                                // Be permissive: if we decoded SYSINFO and it contains main carrier info,
+                                // accept it. (A strict Hz-level compare is brittle due to rounding/ppm/AFC.)
+                                if (r.Panel.HasMainCarrierInfo)
+                                {
+                                    mainHz = r.Panel.MainCellFrequencyHz;
                                     got = true;
+                                }
                             };
 
                             lock (_sinkLock) { _wideSource.AddSink(r); }
 
                             var sw = System.Diagnostics.Stopwatch.StartNew();
                             while (!got && sw.ElapsedMilliseconds < probeTimeoutMs)
-                                await System.Threading.Tasks.Task.Delay(100).ConfigureAwait(false);
+                                await System.Threading.Tasks.Task.Delay(50).ConfigureAwait(false);
 
-                            if (!got && r.Panel.HasMainCarrierInfo && Math.Abs(r.Panel.MainCellFrequencyHz - f) < 2)
+                            if (!got && r.Panel.HasMainCarrierInfo)
                             {
+                                // Fallback: if we already have fresh SYSINFO, accept it.
                                 var ticks = r.Panel.LastSysInfoUtcTicks;
                                 if (ticks != 0)
                                 {
                                     var age = new TimeSpan(DateTime.UtcNow.Ticks - ticks);
                                     if (age.TotalMilliseconds <= probeTimeoutMs + 500)
+                                    {
+                                        mainHz = r.Panel.MainCellFrequencyHz;
                                         got = true;
+                                    }
                                 }
                             }
 
                             if (got)
                             {
-                                lock (found) { found.Add(f); }
+                                // Prefer the decoded main carrier frequency (snapped to raster)
+                                // so we add the *real* MCCH even if our probe f was slightly off.
+                                var addHz = mainHz > 0 ? mainHz : f;
+                                addHz = (addHz / step) * step;
+                                lock (found) { found.Add(addHz); }
                             }
                         }
                         finally
