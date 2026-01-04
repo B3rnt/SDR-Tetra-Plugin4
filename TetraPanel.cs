@@ -1836,15 +1836,42 @@ private static string GetRoleText(int timeslot, int nCommonSc, bool isActive)
 
         private void AfcTimer_Tick(object sender, EventArgs e)
         {
-            ferLabel.Text = string.Format("FER {0:F0}Hz", _freqError);
-            if (!_tetraSettings.AfcDisabled)
+            // Defensive: during fast scan we create/dispose panels rapidly.
+            // WinForms timers can still tick briefly after disposal, or the constructor
+            // may have failed early (constructor is wrapped in a try/catch).
+            try
             {
-                if (_freqError > 200 || _freqError < -200)
+                if (IsDisposed) return;
+                if (ferLabel == null) return;
+
+                ferLabel.Text = string.Format("FER {0:F0}Hz", _freqError);
+
+                var settings = _tetraSettings;
+                if (settings == null) return;
+
+                if (!settings.AfcDisabled)
                 {
-                    _isAfcWork = true;
-                    if (_externalIqMode) { if (AfcCorrectionRequested != null) AfcCorrectionRequested(_freqError); } else { _controlInterface.Frequency += (long)_freqError; }
-                    _freqError = 0;
+                    if (_freqError > 200 || _freqError < -200)
+                    {
+                        _isAfcWork = true;
+
+                        if (_externalIqMode)
+                        {
+                            AfcCorrectionRequested?.Invoke(_freqError);
+                        }
+                        else
+                        {
+                            if (_controlInterface != null)
+                                _controlInterface.Frequency += (long)_freqError;
+                        }
+
+                        _freqError = 0;
+                    }
                 }
+            }
+            catch
+            {
+                // Never crash SDR# due to a timer tick.
             }
         }
 
@@ -1988,6 +2015,14 @@ private static string GetRoleText(int timeslot, int nCommonSc, bool isActive)
         partial void DisposeCustom(bool disposing)
         {
             if (!disposing) return;
+
+            // Stop timers first to avoid ticks after disposal (common during scan probes)
+            try { afcTimer?.Stop(); } catch { }
+            try { dataExtractorTimer?.Stop(); } catch { }
+            try { markerTimer?.Stop(); } catch { }
+            try { timerGui?.Stop(); } catch { }
+            // (No other timers)
+
 try { _decoder?.Dispose(); } catch { }
                 _decoder = null;
 

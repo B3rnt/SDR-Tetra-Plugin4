@@ -286,7 +286,19 @@ namespace SDRSharp.Tetra.MultiChannel
                             AgcTargetRms = 0.25f
                         };
 
-                        var r = new TetraChannelRunner(_control, tmp);
+                        // IMPORTANT: TetraPanel is a WinForms UserControl.
+                        // Creating controls on a ThreadPool thread can lead to constructor exceptions
+                        // and later timer NullReference crashes. Always create the runner on the UI thread.
+                        TetraChannelRunner r = null;
+                        try
+                        {
+                            r = await UiInvokeAsync(() => new TetraChannelRunner(_control, tmp)).ConfigureAwait(false);
+                        }
+                        catch
+                        {
+                            // If we can't create the runner, just skip this frequency.
+                            return;
+                        }
                         try
                         {
                             r.Panel.SetDemodulatorEnabled(true);
@@ -342,6 +354,33 @@ namespace SDRSharp.Tetra.MultiChannel
                     {
                         sem.Release();
                     }
+                }
+
+                // Helper: marshal work onto the UI thread so WinForms controls are created safely.
+                System.Threading.Tasks.Task<T> UiInvokeAsync<T>(Func<T> func)
+                {
+                    var tcs = new System.Threading.Tasks.TaskCompletionSource<T>();
+                    try
+                    {
+                        if (IsHandleCreated && InvokeRequired)
+                        {
+                            BeginInvoke(new Action(() =>
+                            {
+                                try { tcs.SetResult(func()); }
+                                catch (Exception ex) { tcs.SetException(ex); }
+                            }));
+                        }
+                        else
+                        {
+                            // Already on UI thread (or handle not created yet)
+                            tcs.SetResult(func());
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        tcs.SetException(ex);
+                    }
+                    return tcs.Task;
                 }
 
                 foreach (var f in candidates)
