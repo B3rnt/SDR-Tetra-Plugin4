@@ -274,6 +274,9 @@ namespace SDRSharp.Tetra.MultiChannel
                             };
 
                             var r = new TetraChannelRunner(_control, tmp);
+                            // Probes are headless: ensure the demodulator is actually started
+                            // (normally the user ticks the "Demodulator" checkbox).
+                            r.Panel.SetDemodulatorEnabled(true);
                             r.Panel.SysInfoBroadcastReceived += () =>
                             {
                                 lock (found) { found.Add(f); }

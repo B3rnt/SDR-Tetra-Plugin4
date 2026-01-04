@@ -148,6 +148,23 @@ namespace SDRSharp.Tetra
         /// </summary>
         public event Action SysInfoBroadcastReceived;
 
+        /// <summary>
+        /// Enable/disable the demodulator (same as toggling the "Demodulator" checkbox).
+        /// Useful for headless/probe panels (e.g. Scan MCCH) where the UI is not shown.
+        /// </summary>
+        public void SetDemodulatorEnabled(bool enabled)
+        {
+            try
+            {
+                if (enabledCheckBox.Checked != enabled)
+                    enabledCheckBox.Checked = enabled;
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
 
         #region Init and store settings
         public unsafe TetraPanel(ISharpControl control) : this(control, externalIq: false) { }
