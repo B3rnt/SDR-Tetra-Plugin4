@@ -249,18 +249,25 @@ namespace SDRSharp.Tetra.MultiChannel
 
                 bool fullRaster = (Control.ModifierKeys & Keys.Control) != 0;
 
-                List<long> candidates;
+                List<long> candidates = new List<long>();
                 if (!fullRaster)
                 {
                     // Scan only the frequencies already present in the channel list (much faster).
-                    candidates = _channels.Select(c => c.FrequencyHz)
+                    candidates = _channels
+                        .Select(c => c.FrequencyHz)
                         .Where(f => f >= start && f <= end)
                         .Distinct()
                         .OrderBy(f => f)
                         .ToList();
 
                     if (candidates.Count == 0)
-                        fullRaster = true;
+                    {
+                        MessageBox.Show(
+                            "Geen kanalen uit de lijst vallen binnen de huidige bandbreedte. " +
+                            "Centreer je SDR rond de gewenste TETRA carriers of vergroot je sample rate. " +
+                            "Tip: houd CTRL ingedrukt bij Scan om het volledige 12.5 kHz raster binnen de zichtbare bandbreedte te scannen." );
+                        return;
+                    }
                 }
 
                 if (fullRaster)
