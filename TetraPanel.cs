@@ -168,13 +168,6 @@ namespace SDRSharp.Tetra
         /// This is only valid once <see cref="HasMainCarrierInfo"/> is true.
         /// </summary>
         public long MainCellFrequencyHz => _mainCell_Frequency;
-
-        /// <summary>
-        /// UTC timestamp (ticks) of the last decoded broadcast system information.
-        /// Useful for scans to know whether the value is fresh.
-        /// </summary>
-        public long LastSysInfoUtcTicks { get; private set; }
-
         /// <summary>
         /// True if the current tuned carrier is the network's main carrier (carrier index 0).
         /// Only then does TS1 act as MCCH.
