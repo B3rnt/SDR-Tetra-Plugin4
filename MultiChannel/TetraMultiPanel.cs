@@ -250,55 +250,71 @@ namespace SDRSharp.Tetra.MultiChannel
 
                 var found = new HashSet<long>();
 
-                // Scan in small batches to avoid CPU spikes
-                const int batchSize = 12;
-                const int batchTimeoutMs = 6000;
+                // Scan sequentially (1 probe at a time) to avoid disturbing already-running channels.
+                // The previous batched approach could starve other decoders and still miss sysinfo bursts.
+                const int probeTimeoutMs = 15_000;
 
-                for (int i = 0; i < candidates.Count; i += batchSize)
+                foreach (var f in candidates)
                 {
-                    var batch = candidates.Skip(i).Take(batchSize).ToList();
-                    var runners = new List<TetraChannelRunner>();
+                    bool got = false;
+                    var tmp = new ChannelSettings
+                    {
+                        Name = "SCAN",
+                        FrequencyHz = f,
+                        Enabled = true,
+                        // Enable AGC for probes so they lock more reliably across varying levels
+                        AgcEnabled = true,
+                        AgcTargetRms = 0.25f
+                    };
 
+                    var r = new TetraChannelRunner(_control, tmp);
                     try
                     {
-                        foreach (var f in batch)
+                        // Probes are headless: ensure the demodulator is actually started
+                        // (normally the user ticks the "Demodulator" checkbox).
+                        r.Panel.SetDemodulatorEnabled(true);
+
+                        // Mark as found when we decode broadcast sysinfo.
+                        // Using "IsOnMainCarrier" is unreliable across forks because timeslot labelling
+                        // and carrier index computations can vary. Broadcast sysinfo itself is the robust
+                        // indicator that MCCH is present on this tuned frequency.
+                        r.Panel.SysInfoBroadcastReceived += () =>
                         {
-                            var tmp = new ChannelSettings
-                            {
-                                Name = "SCAN",
-                                FrequencyHz = f,
-                                Enabled = true,
-                                // Enable AGC for probes so they lock more reliably across varying levels
-                                AgcEnabled = true,
-                                AgcTargetRms = 0.25f
-                            };
+                            if (r.Panel.HasMainCarrierInfo && Math.Abs(r.Panel.MainCellFrequencyHz - f) < 2)
+                                got = true;
+                        };
 
-                            var r = new TetraChannelRunner(_control, tmp);
-                            // Probes are headless: ensure the demodulator is actually started
-                            // (normally the user ticks the "Demodulator" checkbox).
-                            r.Panel.SetDemodulatorEnabled(true);
-                            r.Panel.SysInfoBroadcastReceived += () =>
-                            {
-                                lock (found) { found.Add(f); }
-                            };
+                        _wideSource.AddSink(r);
 
-                            runners.Add(r);
-                            _wideSource.AddSink(r);
+                        var sw = System.Diagnostics.Stopwatch.StartNew();
+                        while (!got && sw.ElapsedMilliseconds < probeTimeoutMs)
+                            await System.Threading.Tasks.Task.Delay(100);
+
+                        // Fallback: poll the sysinfo timestamp in case the event isn't raised.
+                        if (!got && r.Panel.HasMainCarrierInfo && Math.Abs(r.Panel.MainCellFrequencyHz - f) < 2)
+                        {
+                            var ticks = r.Panel.LastSysInfoUtcTicks;
+                            if (ticks != 0)
+                            {
+                                var age = new TimeSpan(DateTime.UtcNow.Ticks - ticks);
+                                if (age.TotalMilliseconds <= probeTimeoutMs + 500)
+                                    got = true;
+                            }
                         }
 
-                        // Wait a bit so each probe can catch a broadcast burst
-                        var sw = System.Diagnostics.Stopwatch.StartNew();
-                        while (sw.ElapsedMilliseconds < batchTimeoutMs)
-                            await System.Threading.Tasks.Task.Delay(100);
+                        if (got)
+                        {
+                            lock (found) { found.Add(f); }
+                        }
                     }
                     finally
                     {
-                        foreach (var r in runners)
-                        {
-                            try { _wideSource.RemoveSink(r); } catch { }
-                            try { r.Dispose(); } catch { }
-                        }
+                        try { _wideSource.RemoveSink(r); } catch { }
+                        try { r.Dispose(); } catch { }
                     }
+
+                    // Give UI/other decoders breathing room.
+                    await System.Threading.Tasks.Task.Delay(25);
                 }
 
                 // Add discovered MCCH channels (only the missing ones)
@@ -346,17 +362,40 @@ namespace SDRSharp.Tetra.MultiChannel
 		{
 			try
 			{
-				// Prefer CenterFrequency if available (RawIQ is centered on hardware LO)
-				var pCenter = control.GetType().GetProperty("CenterFrequency");
-				if (pCenter != null)
+				var t = control.GetType();
+
+				foreach (var name in new[]
 				{
-					var v = pCenter.GetValue(control, null);
+					"CenterFrequency",
+					"LOFrequency",
+					"RfFrequency",
+					"RFFrequency",
+					"RadioFrequency",
+					"DeviceFrequency",
+					"HardwareFrequency"
+				})
+				{
+					var p = t.GetProperty(name);
+					if (p == null) continue;
+					var v = p.GetValue(control, null);
 					if (v is long l) return l;
 					if (v is int i) return i;
 					if (v is double d) return (long)d;
 				}
 
-				// Fall back to the currently tuned frequency.
+				foreach (var p in t.GetProperties())
+				{
+					var n = p.Name;
+					if (n.IndexOf("Center", StringComparison.OrdinalIgnoreCase) >= 0 &&
+						n.IndexOf("Freq", StringComparison.OrdinalIgnoreCase) >= 0)
+					{
+						var v = p.GetValue(control, null);
+						if (v is long l) return l;
+						if (v is int i) return i;
+						if (v is double d) return (long)d;
+					}
+				}
+
 				return control.Frequency;
 			}
 			catch

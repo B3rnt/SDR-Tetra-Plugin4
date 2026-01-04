@@ -97,28 +97,53 @@ namespace SDRSharp.Tetra.MultiChannel
 
 
         private static long GetCenterFrequencyHz(ISharpControl control)
-{
-    try
-    {
-        // Prefer CenterFrequency if available (RawIQ is centered on hardware LO)
-        var pCenter = control.GetType().GetProperty("CenterFrequency");
-        if (pCenter != null)
         {
-            var v = pCenter.GetValue(control, null);
-            if (v is long l) return l;
-            if (v is int i) return i;
-            if (v is double d) return (long)d;
-        }
+            try
+            {
+                var t = control.GetType();
 
-        // Fall back to the currently tuned frequency. (Do NOT apply FrequencyShift here;
-        // different SDR# builds interpret it differently and it can break wide-IQ offsets.)
-        return control.Frequency;
-    }
-    catch
-    {
-        return control.Frequency;
-    }
-}
+                // Try common property names used across SDR# builds/forks.
+                foreach (var name in new[]
+                {
+                    "CenterFrequency",
+                    "LOFrequency",
+                    "RfFrequency",
+                    "RFFrequency",
+                    "RadioFrequency",
+                    "DeviceFrequency",
+                    "HardwareFrequency"
+                })
+                {
+                    var p = t.GetProperty(name);
+                    if (p == null) continue;
+                    var v = p.GetValue(control, null);
+                    if (v is long l) return l;
+                    if (v is int i) return i;
+                    if (v is double d) return (long)d;
+                }
+
+                // Heuristic: any property containing "Center" and "Frequency".
+                foreach (var p in t.GetProperties())
+                {
+                    var n = p.Name;
+                    if (n.IndexOf("Center", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                        n.IndexOf("Freq", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        var v = p.GetValue(control, null);
+                        if (v is long l) return l;
+                        if (v is int i) return i;
+                        if (v is double d) return (long)d;
+                    }
+                }
+
+                // Fall back to the currently tuned frequency.
+                return control.Frequency;
+            }
+            catch
+            {
+                return control.Frequency;
+            }
+        }
 
         private void EnsureOutBuffer(int complexCount)
         {
