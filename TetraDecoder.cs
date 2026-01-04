@@ -688,13 +688,13 @@ namespace SDRSharp.Tetra
             {
                 _owner.BeginInvoke(SyncInfoReady, syncInfo);
             }
-            catch (InvalidOperationException)
-            {
-                // Handle not created (race) or already tearing down.
-            }
             catch (ObjectDisposedException)
             {
                 // UI is gone.
+            }
+            catch (InvalidOperationException)
+            {
+                // Handle not created (race) or already tearing down.
             }
         }
 
@@ -728,10 +728,10 @@ namespace SDRSharp.Tetra
                 {
                     _owner.BeginInvoke((Action)FlushBatchedData);
                 }
-                catch (InvalidOperationException)
+                catch (ObjectDisposedException)
                 {
                 }
-                catch (ObjectDisposedException)
+                catch (InvalidOperationException)
                 {
                 }
             }
