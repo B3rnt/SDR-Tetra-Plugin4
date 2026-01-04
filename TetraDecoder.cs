@@ -676,9 +676,25 @@ namespace SDRSharp.Tetra
 
         private void UpdateSyncInfo(ReceivedData syncInfo)
         {
-            if (SyncInfoReady != null)
+            if (SyncInfoReady == null)
+                return;
+
+            // In scan/probe mode the host control might never create a window handle.
+            // BeginInvoke/Invoke require a created handle and will throw otherwise.
+            if (_owner == null || _owner.IsDisposed || !_owner.IsHandleCreated)
+                return;
+
+            try
             {
                 _owner.BeginInvoke(SyncInfoReady, syncInfo);
+            }
+            catch (InvalidOperationException)
+            {
+                // Handle not created (race) or already tearing down.
+            }
+            catch (ObjectDisposedException)
+            {
+                // UI is gone.
             }
         }
 
@@ -705,7 +721,19 @@ namespace SDRSharp.Tetra
 
             if (shouldPost)
             {
-                _owner.BeginInvoke((Action)FlushBatchedData);
+                if (_owner == null || _owner.IsDisposed || !_owner.IsHandleCreated)
+                    return;
+
+                try
+                {
+                    _owner.BeginInvoke((Action)FlushBatchedData);
+                }
+                catch (InvalidOperationException)
+                {
+                }
+                catch (ObjectDisposedException)
+                {
+                }
             }
         }
 

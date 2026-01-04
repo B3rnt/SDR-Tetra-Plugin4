@@ -22,7 +22,12 @@ namespace SDRSharp.Tetra.MultiChannel
         private Button _remove;
         private Button _save;
         private Button _scanMcch;
+        private NumericUpDown _scanParallel;
+        private Label _scanParallelLbl;
         private TabControl _tabs;
+
+        // Add/RemoveSink can be called from different threads during scanning.
+        private readonly object _sinkLock = new object();
 
         public TetraMultiPanel(ISharpControl control)
         {
@@ -87,7 +92,11 @@ namespace SDRSharp.Tetra.MultiChannel
             _save = new Button { Text = "Opslaan", Width = 70 };
             _scanMcch = new Button { Text = "Scan MCCH", Width = 90 };
 
-            leftTop.Controls.AddRange(new Control[] { _add, _remove, _save, _scanMcch });
+            _scanParallelLbl = new Label { Text = "Probes", AutoSize = true, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(8, 8, 0, 0) };
+            _scanParallel = new NumericUpDown { Minimum = 1, Maximum = 8, Value = 2, Width = 45 };
+            _scanParallel.Margin = new Padding(2, 6, 0, 0);
+
+            leftTop.Controls.AddRange(new Control[] { _add, _remove, _save, _scanMcch, _scanParallelLbl, _scanParallel });
 
             var left = new Panel { Dock = DockStyle.Fill };
             left.Controls.Add(_grid);
@@ -250,72 +259,79 @@ namespace SDRSharp.Tetra.MultiChannel
 
                 var found = new HashSet<long>();
 
-                // Scan sequentially (1 probe at a time) to avoid disturbing already-running channels.
-                // The previous batched approach could starve other decoders and still miss sysinfo bursts.
+                // Parallel probing (bounded). Too many probes will starve existing decoders.
+                // Default is 2; user can raise it in the UI.
                 const int probeTimeoutMs = 15_000;
+                int parallel = 2;
+                try { parallel = Math.Max(1, (int)_scanParallel.Value); } catch { }
 
-                foreach (var f in candidates)
+                var sem = new System.Threading.SemaphoreSlim(parallel, parallel);
+                var tasks = new List<System.Threading.Tasks.Task>(candidates.Count);
+
+                async System.Threading.Tasks.Task ProbeOneAsync(long f)
                 {
-                    bool got = false;
-                    var tmp = new ChannelSettings
-                    {
-                        Name = "SCAN",
-                        FrequencyHz = f,
-                        Enabled = true,
-                        // Enable AGC for probes so they lock more reliably across varying levels
-                        AgcEnabled = true,
-                        AgcTargetRms = 0.25f
-                    };
-
-                    var r = new TetraChannelRunner(_control, tmp);
+                    await sem.WaitAsync().ConfigureAwait(false);
                     try
                     {
-                        // Probes are headless: ensure the demodulator is actually started
-                        // (normally the user ticks the "Demodulator" checkbox).
-                        r.Panel.SetDemodulatorEnabled(true);
-
-                        // Mark as found when we decode broadcast sysinfo.
-                        // Using "IsOnMainCarrier" is unreliable across forks because timeslot labelling
-                        // and carrier index computations can vary. Broadcast sysinfo itself is the robust
-                        // indicator that MCCH is present on this tuned frequency.
-                        r.Panel.SysInfoBroadcastReceived += () =>
+                        bool got = false;
+                        var tmp = new ChannelSettings
                         {
-                            if (r.Panel.HasMainCarrierInfo && Math.Abs(r.Panel.MainCellFrequencyHz - f) < 2)
-                                got = true;
+                            Name = "SCAN",
+                            FrequencyHz = f,
+                            Enabled = true,
+                            AgcEnabled = true,
+                            AgcTargetRms = 0.25f
                         };
 
-                        _wideSource.AddSink(r);
-
-                        var sw = System.Diagnostics.Stopwatch.StartNew();
-                        while (!got && sw.ElapsedMilliseconds < probeTimeoutMs)
-                            await System.Threading.Tasks.Task.Delay(100);
-
-                        // Fallback: poll the sysinfo timestamp in case the event isn't raised.
-                        if (!got && r.Panel.HasMainCarrierInfo && Math.Abs(r.Panel.MainCellFrequencyHz - f) < 2)
+                        var r = new TetraChannelRunner(_control, tmp);
+                        try
                         {
-                            var ticks = r.Panel.LastSysInfoUtcTicks;
-                            if (ticks != 0)
+                            r.Panel.SetDemodulatorEnabled(true);
+
+                            r.Panel.SysInfoBroadcastReceived += () =>
                             {
-                                var age = new TimeSpan(DateTime.UtcNow.Ticks - ticks);
-                                if (age.TotalMilliseconds <= probeTimeoutMs + 500)
+                                if (r.Panel.HasMainCarrierInfo && Math.Abs(r.Panel.MainCellFrequencyHz - f) < 2)
                                     got = true;
+                            };
+
+                            lock (_sinkLock) { _wideSource.AddSink(r); }
+
+                            var sw = System.Diagnostics.Stopwatch.StartNew();
+                            while (!got && sw.ElapsedMilliseconds < probeTimeoutMs)
+                                await System.Threading.Tasks.Task.Delay(100).ConfigureAwait(false);
+
+                            if (!got && r.Panel.HasMainCarrierInfo && Math.Abs(r.Panel.MainCellFrequencyHz - f) < 2)
+                            {
+                                var ticks = r.Panel.LastSysInfoUtcTicks;
+                                if (ticks != 0)
+                                {
+                                    var age = new TimeSpan(DateTime.UtcNow.Ticks - ticks);
+                                    if (age.TotalMilliseconds <= probeTimeoutMs + 500)
+                                        got = true;
+                                }
+                            }
+
+                            if (got)
+                            {
+                                lock (found) { found.Add(f); }
                             }
                         }
-
-                        if (got)
+                        finally
                         {
-                            lock (found) { found.Add(f); }
+                            try { lock (_sinkLock) { _wideSource.RemoveSink(r); } } catch { }
+                            try { r.Dispose(); } catch { }
                         }
                     }
                     finally
                     {
-                        try { _wideSource.RemoveSink(r); } catch { }
-                        try { r.Dispose(); } catch { }
+                        sem.Release();
                     }
-
-                    // Give UI/other decoders breathing room.
-                    await System.Threading.Tasks.Task.Delay(25);
                 }
+
+                foreach (var f in candidates)
+                    tasks.Add(ProbeOneAsync(f));
+
+                await System.Threading.Tasks.Task.WhenAll(tasks);
 
                 // Add discovered MCCH channels (only the missing ones)
                 var toAdd = found.Where(f => !existing.Contains(f)).OrderBy(f => f).ToList();
