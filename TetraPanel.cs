@@ -1,7 +1,8 @@
-﻿using SDRSharp.Common;
+using SDRSharp.Common;
 using SDRSharp.Radio;
 using System;
 using System.Buffers;
+using System.Collections.Concurrent; // Toegevoegd voor thread-safe collections
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Drawing;
@@ -57,6 +58,8 @@ namespace SDRSharp.Tetra
 
         private Thread _decodingThread;
         private bool _decodingIsStarted;
+        // Nieuw: Event om te wachten op data in plaats van Thread.Sleep
+        private AutoResetEvent _iqReadyEvent = new AutoResetEvent(false); 
 
         private double _iqSamplerate;
         private bool _processIsStarted;
@@ -92,11 +95,14 @@ namespace SDRSharp.Tetra
 
         private NetInfoWindow _infoWindow;
 
-        private List<ReceivedData> _rawData = new List<ReceivedData>();
+        // VERBETERING: Thread-safe queue in plaats van List
+        private ConcurrentQueue<ReceivedData> _rawData = new ConcurrentQueue<ReceivedData>();
+        
         private List<ReceivedData> _cmceData = new List<ReceivedData>();
         private List<ReceivedData> _syncData = new List<ReceivedData>();
         private ReceivedData _syncInfo = new ReceivedData();
         private ReceivedData _sysInfo = new ReceivedData();
+        private object _syncLock = new object(); // Voor thread-safety van sync objecten
 
         private CurrentLoad[] _currentCellLoad = new CurrentLoad[4];
 
@@ -211,8 +217,8 @@ namespace SDRSharp.Tetra
             {
                 InitializeComponent();
                 _audioProcessor ??= new AudioProcessor();
-            // Ensure initial TS role labels are shown even before the first timer tick
-            UpdateTimeslotRoleLabels();
+                // Ensure initial TS role labels are shown even before the first timer tick
+                UpdateTimeslotRoleLabels();
 
                 InitArrays();
 
@@ -431,7 +437,7 @@ namespace SDRSharp.Tetra
             _sysInfo.Clear();
             _currentCalls.Clear();
             _cmceData.Clear();
-            _rawData.Clear();
+            while (_rawData.TryDequeue(out _)) { } // Clear concurrent queue
             _syncInfo.Clear();
 
             _infoWindow.ResetInfo();
@@ -522,7 +528,11 @@ namespace SDRSharp.Tetra
             if (this._radioFifoBuffer == null)
                 this._radioFifoBuffer = new ComplexFifoStream(BlockMode.None);
             if ((double)this._radioFifoBuffer.Length < samplerate)
+            {
                 this._radioFifoBuffer.Write(samples, length);
+                // VERBETERING: Signaleer de decoder dat er data is
+                _iqReadyEvent.Set();
+            }
             else
                 ++this._lostBuffers;
         }
@@ -565,6 +575,8 @@ namespace SDRSharp.Tetra
         private void DecoderStart()
         {
             _decodingIsStarted = true;
+            _iqReadyEvent.Reset(); // Reset event
+
             _decodingThread = new Thread(DecodingThread)
             {
                 Priority = ThreadPriority.Normal,
@@ -573,13 +585,14 @@ namespace SDRSharp.Tetra
             _decodingThread.Start();
 
             if (_audioProcessor != null) _audioProcessor.Enabled = true;
-_needDisplayBufferUpdate = _tetraSettings != null && _tetraSettings.ShowDiagram;
+            _needDisplayBufferUpdate = _tetraSettings != null && _tetraSettings.ShowDiagram;
         }
 
         private void DecoderStop()
         {
             if (_audioProcessor != null) _audioProcessor.Enabled = false;
-_decodingIsStarted = false;
+            _decodingIsStarted = false;
+            _iqReadyEvent.Set(); // Unblock thread to allow exit
 
             if (_decodingThread != null)
             {
@@ -592,7 +605,6 @@ _decodingIsStarted = false;
         /**
          * Thread que espera a que se cargue el radiobuffer y luego lo procesa.
          * Buffer de 510 Bits
-         * @todo verify and traspose
          */
         private unsafe void DecodingThread()
         {
@@ -605,7 +617,17 @@ _decodingIsStarted = false;
             _diBitsBuffer = UnsafeBuffer.Create(BurstLengthBits, sizeof(byte));
             _diBitsBufferPtr = (byte*)_diBitsBuffer;
 
-            UdpClient server = new UdpClient("127.0.0.1", _tetraSettings.UdpPort);
+            // VERBETERING: UdpClient buiten de loop!
+            UdpClient server = null;
+            try 
+            {
+                 server = new UdpClient("127.0.0.1", _tetraSettings.UdpPort);
+            }
+            catch (Exception ex)
+            {
+                 // Handle error, maybe logging. Or disable UDP.
+                 // We continue without UDP if it fails to bind.
+            }
 
             var audioSamplerate = 0d;
 
@@ -613,38 +635,33 @@ _decodingIsStarted = false;
             {
                 Ptr = _diBitsBufferPtr
             };
+
             while (this._decodingIsStarted)
             {
+                // VERBETERING: Wacht efficient op data ipv Thread.Sleep
                 if ((_radioFifoBuffer == null) || (_radioFifoBuffer.Length < SamplesPerBurst) || (_iqSamplerate == 0))
                 {
-                    Thread.Sleep(10);
+                    _iqReadyEvent.WaitOne(100); // Wait up to 100ms for data
                     continue;
                 }
 
                 burst.Mode = this._tetraMode;
 
-                ///@todo CRITICAL PENDING
-                ///Original
-                ///_radioFifoBuffer.Read(_iqBufferPtr, SamplesPerBurst);
-                ///_demodulator.ProcessBuffer(burst, _iqBufferPtr, _symbolsBufferPtr);
-                ///SamplesPerBurst 255 *4 -> 1020
-                ///BurstLengthBits -> 510
-                ///Con 1024 no encuentra los paquetes!!!
-
                 this._radioFifoBuffer.Read(this._iqBufferPtr, BurstLengthBits);
                 this._demodulator.ProcessBuffer(burst, this._iqBufferPtr, this._iqSamplerate, BurstLengthBits, this._symbolsBufferPtr);
-                /// END CRITICAL
-
+                
                 if (burst.Type == BurstType.WaitBurst)
                     continue;
 
                 AutomaticFrequencyControl(_symbolsBufferPtr, BurstLengthSymbols);
 
-                if (_tetraSettings.UdpEnabled)
+                if (_tetraSettings.UdpEnabled && server != null)
                 {
                     var rented = ArrayPool<byte>.Shared.Rent(BurstLengthSymbols * 2);
                     ConvertAngleToDiBits(_symbolsBufferPtr, BurstLengthSymbols, rented);
-                    server.Send(rented, BurstLengthBits);
+                    try {
+                        server.Send(rented, BurstLengthBits);
+                    } catch { } // Ignore send errors
                     ArrayPool<byte>.Shared.Return(rented);
                 }
 
@@ -652,7 +669,7 @@ _decodingIsStarted = false;
 
                 _tetraMode = _decoder.TetraMode;
 
-                if (_needDisplayBufferUpdate)// && _decoder.HaveErrors)
+                if (_needDisplayBufferUpdate)
                 {
                     _needDisplayBufferUpdate = false;
 
@@ -666,7 +683,6 @@ _decodingIsStarted = false;
                 if (audioSamplerate != _audioSamplerate)
                 {
                     audioSamplerate = _audioSamplerate;
-                    // Recreate resampler/buffer on samplerate changes; free previous to avoid leaks.
                     (_audioResampler as IDisposable)?.Dispose();
                     _audioResampler = new Resampler(8000, audioSamplerate);
 
@@ -698,14 +714,14 @@ _decodingIsStarted = false;
                         if (!_channel4Listen) continue;
                         break;
                 }
-                //resample buffer
+                
                 var audioLength = _audioResampler.Process(_outAudioBufferPtr, _resampledAudioPtr, _outAudioBuffer.Length);
-                //Clone to stereo
-                // audioLength = MonoToStereo(_resampledAudioPtr, audioLength);
-                // Copy to output fifo
                 _audioStreamChannel.Write(_resampledAudioPtr, audioLength);
 
             }
+
+            // Cleanup
+            server?.Dispose();
 
             _iqBuffer.Dispose();
             _iqBuffer = null;
@@ -735,7 +751,6 @@ _decodingIsStarted = false;
 
         private void ConvertAngleToDiBits(float* angles, int sourceLength, byte[] bitsBuffer)
         {
-            // bitsBuffer must be at least sourceLength*2 bytes.
             float delta;
             int indexout = 0;
 
@@ -789,26 +804,20 @@ _decodingIsStarted = false;
 
         #region Received Data Extractor
 
-        //private const int CallTimeout = 10;
-        //private int _currentChPriority;
-
         void _decoder_DataReady(List<ReceivedData> data)
         {
-
-            ////Debug.WriteLine("data delegate " + Thread.CurrentThread.ManagedThreadId.ToString());
-
             if (_resetCounter > 0)
             {
                 return;
             }
 
-            while (data.Count > 0)
+            // VERBETERING: Thread-safe enqueue
+            foreach(var d in data)
             {
-                if (_rawData.Count < 100)
-                    _rawData.Add(data[0]);
-
-                data.RemoveAt(0);
+                if (_rawData.Count < 500) // Prevent memory explosion if UI hangs
+                    _rawData.Enqueue(d);
             }
+            data.Clear();
         }
 
         public void UpdateCallsInfo(ReceivedData data)
@@ -1042,8 +1051,10 @@ _decodingIsStarted = false;
             {
                 return;
             }
-
-            syncInfo.Data.CopyTo(_syncInfo.Data, 0);
+            
+            lock(_syncLock) {
+                syncInfo.Data.CopyTo(_syncInfo.Data, 0);
+            }
         }
 
         private void UpdateSysInfo(ReceivedData data)
@@ -1084,19 +1095,19 @@ _decodingIsStarted = false;
 
         private void MarkerTimer_Tick(object sender, EventArgs e)
         {
-// Reset UI state when tuning to a new frequency (prevents showing MCCH/SCCH from previous carrier)
-long freqHz = EffectiveFrequencyHz;
-if (_lastUiFrequencyHz < 0)
-{
-    _lastUiFrequencyHz = freqHz;
-}
-else if (Math.Abs(freqHz - _lastUiFrequencyHz) > 100) // >100 Hz change = retune
-{
-    ResetDecoder();
-    _numCommonScchCached = -1;
-    _lastUiFrequencyHz = freqHz;
-    UpdateTimeslotRoleLabels();
-}
+            // Reset UI state when tuning to a new frequency (prevents showing MCCH/SCCH from previous carrier)
+            long freqHz = EffectiveFrequencyHz;
+            if (_lastUiFrequencyHz < 0)
+            {
+                _lastUiFrequencyHz = freqHz;
+            }
+            else if (Math.Abs(freqHz - _lastUiFrequencyHz) > 100) // >100 Hz change = retune
+            {
+                ResetDecoder();
+                _numCommonScchCached = -1;
+                _lastUiFrequencyHz = freqHz;
+                UpdateTimeslotRoleLabels();
+            }
 
 
             if (_displayBuffer != null)
@@ -1291,7 +1302,10 @@ else if (Math.Abs(freqHz - _lastUiFrequencyHz) > 100) // >100 Hz change = retune
 
                 _infoWindow.UpdateCalls(_currentCalls);
 
-                _infoWindow.UpdateSysInfo(_syncInfo, _sysInfo);
+                // VERBETERING: Thread-safe read
+                lock(_syncLock) {
+                    _infoWindow.UpdateSysInfo(_syncInfo, _sysInfo);
+                }
 
                 _infoWindow.UpdateNeighBour();
 
@@ -1886,22 +1900,24 @@ private static string GetRoleText(int timeslot, int nCommonSc, bool isActive)
 
             if (_syncInfo != null)
             {
-                _syncInfo.TryGetValue(GlobalNames.MCC, ref _currentCell_MCC);
-                _syncInfo.TryGetValue(GlobalNames.MNC, ref _currentCell_MNC);
-                _syncInfo.TryGetValue(GlobalNames.ColorCode, ref _currentCell_CC);
+                // VERBETERING: Thread-safe read
+                lock(_syncLock) {
+                    _syncInfo.TryGetValue(GlobalNames.MCC, ref _currentCell_MCC);
+                    _syncInfo.TryGetValue(GlobalNames.MNC, ref _currentCell_MNC);
+                    _syncInfo.TryGetValue(GlobalNames.ColorCode, ref _currentCell_CC);
+                }
 
                 _currentCell_NMI = (_currentCell_MCC << 14) | _currentCell_MNC;
             }
 
-            while (_rawData.Count > 0)
+            // VERBETERING: ConcurrentDequeue loop
+            while (_rawData.TryDequeue(out var data))
             {
-                UpdateSysInfo(_rawData[0]);
+                UpdateSysInfo(data);
 
-                UpdateCmceInfo(_rawData[0]);
+                UpdateCmceInfo(data);
 
-                if (_currentCell_NMI != 0) UpdateCallsInfo(_rawData[0]);
-
-                _rawData.RemoveAt(0);
+                if (_currentCell_NMI != 0) UpdateCallsInfo(data);
             }
 
             if (_currentCell_NMI == 0) return;
@@ -2008,10 +2024,10 @@ private static string GetRoleText(int timeslot, int nCommonSc, bool isActive)
         }
 
         // Multi-channel support: feed externally-downconverted IQ into this panel
-    public unsafe void FeedIq(Complex* samples, double samplerate, int length)
-    {
-        IQSamplesAvailable(samples, samplerate, length);
-    }
+        public unsafe void FeedIq(Complex* samples, double samplerate, int length)
+        {
+            IQSamplesAvailable(samples, samplerate, length);
+        }
         partial void DisposeCustom(bool disposing)
         {
             if (!disposing) return;
@@ -2023,10 +2039,10 @@ private static string GetRoleText(int timeslot, int nCommonSc, bool isActive)
             try { timerGui?.Stop(); } catch { }
             // (No other timers)
 
-try { _decoder?.Dispose(); } catch { }
+            try { _decoder?.Dispose(); } catch { }
                 _decoder = null;
 
-                try { (_demodulator as IDisposable)?.Dispose(); } catch { }
+            try { (_demodulator as IDisposable)?.Dispose(); } catch { }
                 _demodulator = null;
 
                 _iqBuffer?.Dispose(); _iqBuffer = null; _iqBufferPtr = null;
@@ -2037,6 +2053,8 @@ try { _decoder?.Dispose(); } catch { }
                 _resampledAudio?.Dispose(); _resampledAudio = null; _resampledAudioPtr = null;
                 try { (_audioResampler as IDisposable)?.Dispose(); } catch { }
                 _audioResampler = null;
+                
+            _iqReadyEvent?.Dispose();
         }
 
     }
