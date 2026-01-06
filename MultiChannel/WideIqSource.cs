@@ -134,7 +134,7 @@ namespace SDRSharp.Tetra.MultiChannel
                 _queue.Enqueue((arr, length, samplerate));
                 Monitor.Pulse(_lock);
                 // Limit backlog to avoid RAM spike
-                while (_queue.Count > 8)
+                while (_queue.Count > 32)
                 {
                     var old = _queue.Dequeue();
                     ArrayPool<Complex>.Shared.Return(old.buf);
