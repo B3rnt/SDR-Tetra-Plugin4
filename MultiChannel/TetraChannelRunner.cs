@@ -161,7 +161,6 @@ namespace SDRSharp.Tetra.MultiChannel
         {
             if (!_settings.Enabled) return;
             if (_settings.FrequencyHz <= 0) return;
-            if (samplerate <= 0) return; // cannot configure DDC/resampler
 
             var centerHz = GetCenterFrequencyHz(_control);
 
