@@ -27,6 +27,7 @@ namespace SDRSharp.Tetra
         private double _samplerate;
         private int _length;
         private int _interpolation;
+        private int _filterLength; // <--- DEZE WAS VERGETEN
         
         // Training buffers
         private UnsafeBuffer _nts1Buffer;
