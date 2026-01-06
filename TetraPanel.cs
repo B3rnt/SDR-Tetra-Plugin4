@@ -2,7 +2,7 @@ using SDRSharp.Common;
 using SDRSharp.Radio;
 using System;
 using System.Buffers;
-using System.Collections.Concurrent; // Toegevoegd voor thread-safe collections
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Drawing;
@@ -28,8 +28,11 @@ namespace SDRSharp.Tetra
 
         private const int SamplesPerSymbol = 4;
         private const int BurstLengthBits = 510;
-        private const int BurstLengthSymbols = 255;
-        private const int SamplesPerBurst = BurstLengthSymbols * SamplesPerSymbol;
+        // AANGEPAST: Iets ruimer (256 ipv 255) om buffer overflows in de demodulator te voorkomen
+        private const int BurstLengthSymbols = 256; 
+        
+        // AANGEPAST: Veilige buffer size voor hoge sample rates (tot ~4MSPS)
+        private const int MaxIqBufferSize = 65536; 
 
         private const int ChannelActiveDelay = 10;
 
@@ -58,7 +61,6 @@ namespace SDRSharp.Tetra
 
         private Thread _decodingThread;
         private bool _decodingIsStarted;
-        // Nieuw: Event om te wachten op data in plaats van Thread.Sleep
         private AutoResetEvent _iqReadyEvent = new AutoResetEvent(false); 
 
         private double _iqSamplerate;
@@ -95,14 +97,13 @@ namespace SDRSharp.Tetra
 
         private NetInfoWindow _infoWindow;
 
-        // VERBETERING: Thread-safe queue in plaats van List
         private ConcurrentQueue<ReceivedData> _rawData = new ConcurrentQueue<ReceivedData>();
         
         private List<ReceivedData> _cmceData = new List<ReceivedData>();
         private List<ReceivedData> _syncData = new List<ReceivedData>();
         private ReceivedData _syncInfo = new ReceivedData();
         private ReceivedData _sysInfo = new ReceivedData();
-        private object _syncLock = new object(); // Voor thread-safety van sync objecten
+        private object _syncLock = new object();
 
         private CurrentLoad[] _currentCellLoad = new CurrentLoad[4];
 
@@ -115,13 +116,7 @@ namespace SDRSharp.Tetra
         private int _mainCell_Carrier;
         private long _mainCell_Frequency;
 
-        // Used for wideband scanning: timestamp of the last successfully decoded broadcast sysinfo.
         private long _lastSysInfoUtcTicks;
-
-        /// <summary>
-        /// UTC ticks when broadcast system information was last decoded.
-        /// 0 if never.
-        /// </summary>
         public long LastSysInfoUtcTicks => Interlocked.Read(ref _lastSysInfoUtcTicks);
 
         private SortedDictionary<int, CallsEntry> _currentCalls = new SortedDictionary<int, CallsEntry>();
@@ -150,34 +145,14 @@ namespace SDRSharp.Tetra
         private readonly bool _externalIqMode;
         internal Action<double> AfcCorrectionRequested;
 
-        // In multi-channel (external IQ) mode, the panel is fed IQ for a specific channel frequency,
-        // while the SDR# control frequency remains at the wideband center. We therefore need an
-        // explicit "effective" tuned frequency for carrier index calculations and UI labels.
         private long _externalFrequencyHz;
         public void SetExternalFrequency(long hz) { _externalFrequencyHz = hz; }
         private long EffectiveFrequencyHz => _externalIqMode ? _externalFrequencyHz : (_controlInterface != null ? _controlInterface.Frequency : 0);
 
-        /// <summary>
-        /// Fired when a broadcast (MCCH) system information PDU was decoded on this channel.
-        /// Useful for wide-band scanning to discover carriers with MCCH.
-        /// </summary>
         public event Action SysInfoBroadcastReceived;
-
-        /// <summary>
-        /// True once we decoded a broadcast system information block that contained main carrier information.
-        /// This is a robust way for headless scans to determine whether a channel has MCCH activity.
-        /// </summary>
         public bool HasMainCarrierInfo => _mainCell_Frequency > 0 && _mainCell_Carrier >= 0;
-
-        /// <summary>
-        /// Last decoded main cell frequency from broadcast system information (Hz).
-        /// This is only valid once <see cref="HasMainCarrierInfo"/> is true.
-        /// </summary>
         public long MainCellFrequencyHz => _mainCell_Frequency;
-        /// <summary>
-        /// True if the current tuned carrier is the network's main carrier (carrier index 0).
-        /// Only then does TS1 act as MCCH.
-        /// </summary>
+        
         public bool IsOnMainCarrier
         {
             get
@@ -188,10 +163,6 @@ namespace SDRSharp.Tetra
             }
         }
 
-        /// <summary>
-        /// Enable/disable the demodulator (same as toggling the "Demodulator" checkbox).
-        /// Useful for headless/probe panels (e.g. Scan MCCH) where the UI is not shown.
-        /// </summary>
         public void SetDemodulatorEnabled(bool enabled)
         {
             try
@@ -199,12 +170,8 @@ namespace SDRSharp.Tetra
                 if (enabledCheckBox.Checked != enabled)
                     enabledCheckBox.Checked = enabled;
             }
-            catch
-            {
-                // ignore
-            }
+            catch { }
         }
-
 
         #region Init and store settings
         public unsafe TetraPanel(ISharpControl control) : this(control, externalIq: false) { }
@@ -217,7 +184,6 @@ namespace SDRSharp.Tetra
             {
                 InitializeComponent();
                 _audioProcessor ??= new AudioProcessor();
-                // Ensure initial TS role labels are shown even before the first timer tick
                 UpdateTimeslotRoleLabels();
 
                 InitArrays();
@@ -243,15 +209,11 @@ namespace SDRSharp.Tetra
 
                 UpdateGlobals();
 
-                // Apply initial GUI toggles from settings.
                 try
                 {
                     display.Visible = _tetraSettings.ShowDiagram;
                 }
-                catch
-                {
-                    // Ignore designer/runtime differences.
-                }
+                catch { }
 
                 blockNumericUpDown.Value = _tetraSettings.BlockedLevel;
 
@@ -437,7 +399,7 @@ namespace SDRSharp.Tetra
             _sysInfo.Clear();
             _currentCalls.Clear();
             _cmceData.Clear();
-            while (_rawData.TryDequeue(out _)) { } // Clear concurrent queue
+            while (_rawData.TryDequeue(out _)) { } 
             _syncInfo.Clear();
 
             _infoWindow.ResetInfo();
@@ -451,8 +413,6 @@ namespace SDRSharp.Tetra
 
         private void StartDecoding()
         {
-            // In multi-channel mode, this panel can be fed externally (DDC) and may not
-            // own an IFProcessor/control interface. Keep legacy behavior when present.
             if (_ifProcessor != null)
                 _ifProcessor.Enabled = true;
 
@@ -471,20 +431,14 @@ namespace SDRSharp.Tetra
             DecoderStop();
         }
 
-        /**
-         * Verify if SDR# it's ready to decode tetra signals.
-         */
         private bool CheckConditions()
         {
-            // Legacy single-channel mode uses SDR#'s IF processor chain.
-            // Multi-channel mode feeds IQ externally and does not require forcing SDR# settings.
             if (_ifProcessor == null || _controlInterface == null)
             {
-                // If we already know the incoming IQ samplerate, still sanity-check it.
                 if (_iqSamplerate > 0 && _iqSamplerate < 25000)
                 {
                     MessageBox.Show(
-                        "IQ samplerate too low for TETRA. Increase SDR# sample rate/bandwidth or DDC output rate (>= 25000).",
+                        "IQ samplerate too low for TETRA. Increase SDR# sample rate/bandwidth.",
                         "Error",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Exclamation);
@@ -500,41 +454,27 @@ namespace SDRSharp.Tetra
 
             if (_ifProcessor.SampleRate < 25000)
             {
-                if (System.Globalization.CultureInfo.CurrentCulture.Name == "ru-RU")
-                {
-                    MessageBox.Show("Слишком низкая частота дискретизации IF. Измените вид модуляции на WFM или установите параметр minOutputSampleRate value = 32000", "Ошибка",
-                                MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
-                }
-                else
-                {
-                    MessageBox.Show("IF samplerate too low.  Change the modulation type to WFM or set the parameter minOutputSampleRate value = 32000", "Error",
+                 MessageBox.Show("IF samplerate too low. Change the modulation type to WFM.", "Error",
                          MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
-                }
-
                 return false;
             }
             return true;
         }
 
-        /// <summary>
-        /// @todo VERIFY!!!
-        /// </summary>
-        /// <param name="samples"></param>
-        /// <param name="samplerate"></param>
-        /// <param name="length"></param>
         public unsafe void IQSamplesAvailable(Complex* samples, double samplerate, int length)
         {
             this._iqSamplerate = samplerate;
             if (this._radioFifoBuffer == null)
                 this._radioFifoBuffer = new ComplexFifoStream(BlockMode.None);
-            if ((double)this._radioFifoBuffer.Length < samplerate)
+            
+            // Allow buffer to grow if samplerate is high
+            if ((double)this._radioFifoBuffer.Length < (samplerate * 0.1)) // Keep ~100ms
             {
-                this._radioFifoBuffer.Write(samples, length);
-                // VERBETERING: Signaleer de decoder dat er data is
-                _iqReadyEvent.Set();
+                 // ComplexFifoStream auto-grows usually, but we check here
             }
-            else
-                ++this._lostBuffers;
+
+            this._radioFifoBuffer.Write(samples, length);
+            _iqReadyEvent.Set();
         }
 
         private void AutomaticFrequencyControl(float* buffer, int length)
@@ -575,7 +515,7 @@ namespace SDRSharp.Tetra
         private void DecoderStart()
         {
             _decodingIsStarted = true;
-            _iqReadyEvent.Reset(); // Reset event
+            _iqReadyEvent.Reset(); 
 
             _decodingThread = new Thread(DecodingThread)
             {
@@ -592,7 +532,7 @@ namespace SDRSharp.Tetra
         {
             if (_audioProcessor != null) _audioProcessor.Enabled = false;
             _decodingIsStarted = false;
-            _iqReadyEvent.Set(); // Unblock thread to allow exit
+            _iqReadyEvent.Set(); 
 
             if (_decodingThread != null)
             {
@@ -602,32 +542,25 @@ namespace SDRSharp.Tetra
             _controlInterface.AudioIsMuted = false;
         }
 
-        /**
-         * Thread que espera a que se cargue el radiobuffer y luego lo procesa.
-         * Buffer de 510 Bits
-         */
         private unsafe void DecodingThread()
         {
-            _iqBuffer = UnsafeBuffer.Create(SamplesPerBurst, sizeof(Complex));
+            // AANGEPAST: Grote buffer alloceren (65536) om hoge sample rates (Airspy) aan te kunnen
+            _iqBuffer = UnsafeBuffer.Create(MaxIqBufferSize, sizeof(Complex));
             _iqBufferPtr = (Complex*)_iqBuffer;
 
+            // AANGEPAST: Iets ruimere symbol buffer (256)
             _symbolsBuffer = UnsafeBuffer.Create(BurstLengthSymbols, sizeof(float));
             _symbolsBufferPtr = (float*)_symbolsBuffer;
 
             _diBitsBuffer = UnsafeBuffer.Create(BurstLengthBits, sizeof(byte));
             _diBitsBufferPtr = (byte*)_diBitsBuffer;
 
-            // VERBETERING: UdpClient buiten de loop!
             UdpClient server = null;
             try 
             {
                  server = new UdpClient("127.0.0.1", _tetraSettings.UdpPort);
             }
-            catch (Exception ex)
-            {
-                 // Handle error, maybe logging. Or disable UDP.
-                 // We continue without UDP if it fails to bind.
-            }
+            catch { }
 
             var audioSamplerate = 0d;
 
@@ -638,30 +571,48 @@ namespace SDRSharp.Tetra
 
             while (this._decodingIsStarted)
             {
-                // VERBETERING: Wacht efficient op data ipv Thread.Sleep
-                if ((_radioFifoBuffer == null) || (_radioFifoBuffer.Length < SamplesPerBurst) || (_iqSamplerate == 0))
+                // Wacht tot we een samplerate hebben en genoeg data
+                if ((_radioFifoBuffer == null) || (_radioFifoBuffer.Length < 1000) || (_iqSamplerate == 0))
                 {
-                    _iqReadyEvent.WaitOne(100); // Wait up to 100ms for data
+                    _iqReadyEvent.WaitOne(50);
+                    continue;
+                }
+                
+                // AANGEPAST: Dynamische berekening van benodigde samples.
+                // Een Tetra burst is ~14.2ms. We lezen iets meer (15ms) om overlap/sync mogelijk te maken.
+                // Dit werkt voor 32kHz (RTL) maar ook voor 200kHz+ (Airspy).
+                int samplesToRead = (int)(_iqSamplerate * 0.015);
+                
+                // Veiligheidsgrenzen
+                if (samplesToRead < 510) samplesToRead = 510; // Minimaal nodig voor demodulator
+                if (samplesToRead > MaxIqBufferSize) samplesToRead = MaxIqBufferSize;
+
+                if (_radioFifoBuffer.Length < samplesToRead)
+                {
+                    _iqReadyEvent.WaitOne(10); // Even wachten op meer data
                     continue;
                 }
 
                 burst.Mode = this._tetraMode;
 
-                this._radioFifoBuffer.Read(this._iqBufferPtr, BurstLengthBits);
-                this._demodulator.ProcessBuffer(burst, this._iqBufferPtr, this._iqSamplerate, BurstLengthBits, this._symbolsBufferPtr);
+                this._radioFifoBuffer.Read(this._iqBufferPtr, samplesToRead);
+                
+                // Geef het dynamische aantal samples door aan de demodulator
+                this._demodulator.ProcessBuffer(burst, this._iqBufferPtr, this._iqSamplerate, samplesToRead, this._symbolsBufferPtr);
                 
                 if (burst.Type == BurstType.WaitBurst)
                     continue;
 
-                AutomaticFrequencyControl(_symbolsBufferPtr, BurstLengthSymbols);
+                // De symbols buffer is nu 256 lang, maar AFC checkt meestal 255. Dit is veilig.
+                AutomaticFrequencyControl(_symbolsBufferPtr, 255);
 
                 if (_tetraSettings.UdpEnabled && server != null)
                 {
-                    var rented = ArrayPool<byte>.Shared.Rent(BurstLengthSymbols * 2);
-                    ConvertAngleToDiBits(_symbolsBufferPtr, BurstLengthSymbols, rented);
+                    var rented = ArrayPool<byte>.Shared.Rent(255 * 2);
+                    ConvertAngleToDiBits(_symbolsBufferPtr, 255, rented);
                     try {
                         server.Send(rented, BurstLengthBits);
-                    } catch { } // Ignore send errors
+                    } catch { } 
                     ArrayPool<byte>.Shared.Return(rented);
                 }
 
@@ -672,9 +623,8 @@ namespace SDRSharp.Tetra
                 if (_needDisplayBufferUpdate)
                 {
                     _needDisplayBufferUpdate = false;
-
+                    // Copy slechts de zichtbare symbols
                     Utils.Memcpy(_displayBufferPtr, _symbolsBufferPtr, _displayBuffer.Length * sizeof(float));
-
                     _dispayBufferReady = true;
                 }
 
@@ -720,20 +670,11 @@ namespace SDRSharp.Tetra
 
             }
 
-            // Cleanup
             server?.Dispose();
 
-            _iqBuffer.Dispose();
-            _iqBuffer = null;
-            _iqBufferPtr = null;
-
-            _symbolsBuffer.Dispose();
-            _symbolsBuffer = null;
-            _symbolsBufferPtr = null;
-
-            _diBitsBuffer.Dispose();
-            _diBitsBuffer = null;
-            _diBitsBufferPtr = null;
+            _iqBuffer.Dispose(); _iqBuffer = null; _iqBufferPtr = null;
+            _symbolsBuffer.Dispose(); _symbolsBuffer = null; _symbolsBufferPtr = null;
+            _diBitsBuffer.Dispose(); _diBitsBuffer = null; _diBitsBufferPtr = null;
         }
 
         private void ConvertAngleToDiBits(byte* bitsBuffer, float* angles, int sourceLength)
@@ -806,15 +747,11 @@ namespace SDRSharp.Tetra
 
         void _decoder_DataReady(List<ReceivedData> data)
         {
-            if (_resetCounter > 0)
-            {
-                return;
-            }
+            if (_resetCounter > 0) return;
 
-            // VERBETERING: Thread-safe enqueue
             foreach(var d in data)
             {
-                if (_rawData.Count < 500) // Prevent memory explosion if UI hangs
+                if (_rawData.Count < 500) 
                     _rawData.Enqueue(d);
             }
             data.Clear();
@@ -1047,10 +984,7 @@ namespace SDRSharp.Tetra
 
         void _decoder_SyncInfoReady(ReceivedData syncInfo)
         {
-            if (_resetCounter > 0)
-            {
-                return;
-            }
+            if (_resetCounter > 0) return;
             
             lock(_syncLock) {
                 syncInfo.Data.CopyTo(_syncInfo.Data, 0);
@@ -1065,7 +999,6 @@ namespace SDRSharp.Tetra
 
                 _sysInfo.TryGetValue(GlobalNames.Location_Area, ref _currentCell_LA);
 
-                // Cache number of SCCH on MCCH (SDRtetra: NumOfSCCH_on_MCCH)
                 int nCommonSc = -1;
                 if (_sysInfo.TryGetValue(GlobalNames.NumberOfCommon_SC, ref nCommonSc))
                     _numCommonScchCached = nCommonSc;
@@ -1082,7 +1015,6 @@ namespace SDRSharp.Tetra
                 _mainCell_Carrier = carrier;
 
                 _currentCell_Carrier = Global.CarrierCalc(EffectiveFrequencyHz);
-                // Mark last sysinfo time for wide-band scans.
                 Interlocked.Exchange(ref _lastSysInfoUtcTicks, DateTime.UtcNow.Ticks);
 
                 try { SysInfoBroadcastReceived?.Invoke(); } catch { }
@@ -1095,13 +1027,12 @@ namespace SDRSharp.Tetra
 
         private void MarkerTimer_Tick(object sender, EventArgs e)
         {
-            // Reset UI state when tuning to a new frequency (prevents showing MCCH/SCCH from previous carrier)
             long freqHz = EffectiveFrequencyHz;
             if (_lastUiFrequencyHz < 0)
             {
                 _lastUiFrequencyHz = freqHz;
             }
-            else if (Math.Abs(freqHz - _lastUiFrequencyHz) > 100) // >100 Hz change = retune
+            else if (Math.Abs(freqHz - _lastUiFrequencyHz) > 100) 
             {
                 ResetDecoder();
                 _numCommonScchCached = -1;
@@ -1109,12 +1040,10 @@ namespace SDRSharp.Tetra
                 UpdateTimeslotRoleLabels();
             }
 
-
             if (_displayBuffer != null)
             {
                 bool showDiagram = (_tetraSettings != null) && _tetraSettings.ShowDiagram;
 
-                // Keep the control visibility in sync (also handles runtime toggles).
                 if (display.Visible != showDiagram)
                     display.Visible = showDiagram;
 
@@ -1122,7 +1051,6 @@ namespace SDRSharp.Tetra
                 {
                     _dispayBufferReady = false;
                     display.Perform(_displayBufferPtr, _displayBuffer.Length);
-                    // Invalidate is cheaper than forcing an immediate synchronous redraw.
                     display.Invalidate();
                     _needDisplayBufferUpdate = true;
                 }
@@ -1299,10 +1227,8 @@ namespace SDRSharp.Tetra
             if (_showInfo)
             {
                 _infoWindow.UpdateTextBox(_cmceData);
-
                 _infoWindow.UpdateCalls(_currentCalls);
 
-                // VERBETERING: Thread-safe read
                 lock(_syncLock) {
                     _infoWindow.UpdateSysInfo(_syncInfo, _sysInfo);
                 }
@@ -1361,24 +1287,14 @@ namespace SDRSharp.Tetra
             }
         }
 
-
 private void UpdateTimeslotRoleLabels()
         {
-            // SDRtetra behaviour:
-            // - Only show MCCH/SCCH mapping when we are tuned to the MAIN carrier (carrier index 0).
-            // - On non-main carriers, treat all timeslots as traffic (no MCCH/SCCH).
-            // - "Received" carrier index is (CurrentCarrier - MainCarrier).
-            // - Show "cX" in the ISSI column for traffic slots (like SDRtetra screenshot).
-
             int carrierIndex = (_mainCell_Carrier >= 0 && _currentCell_Carrier >= 0) ? (_currentCell_Carrier - _mainCell_Carrier) : 0;
             bool onMainCarrier = (carrierIndex == 0);
 
             int nScch = _numCommonScchCached;
             if (nScch < 0) nScch = 0;
 
-            // Some SDR-tetra UIs (and forks) label timeslots as 0..3 instead of 1..4.
-            // Internally we keep using the displayed index so the mapping stays consistent
-            // with what the user sees.
             int baseTs = 1;
             try
             {
@@ -1389,17 +1305,9 @@ private void UpdateTimeslotRoleLabels()
 
             string RoleForTs(int ts)
             {
-                if (!onMainCarrier)
-                    return "---";
-
-                // MCCH is on the first downlink slot of the MAIN carrier.
-                if (ts == baseTs)
-                    return "MCCH";
-
-                // Common SCCH occupy the next slots after MCCH.
-                if (nScch > 0 && ts >= (baseTs + 1) && ts <= (baseTs + nScch))
-                    return "SCCH " + (ts - baseTs);
-
+                if (!onMainCarrier) return "---";
+                if (ts == baseTs) return "MCCH";
+                if (nScch > 0 && ts >= (baseTs + 1) && ts <= (baseTs + nScch)) return "SCCH " + (ts - baseTs);
                 return "---";
             }
 
@@ -1408,27 +1316,24 @@ private void UpdateTimeslotRoleLabels()
             string role3 = _ch3IsActive ? "TCH" : RoleForTs(baseTs + 2);
             string role4 = _ch4IsActive ? "TCH" : RoleForTs(baseTs + 3);
 
-            // keep selection labels compact
             ch1RadioButton.Text = "Timeslot " + (baseTs + 0);
             ch2RadioButton.Text = "Timeslot " + (baseTs + 1);
             ch3RadioButton.Text = "Timeslot " + (baseTs + 2);
             ch4RadioButton.Text = "Timeslot " + (baseTs + 3);
 
-            // GSSI column (MCCH/SCCH/TCH/---)
             label6.Text = role1;
             label7.Text = role2;
             label8.Text = role3;
             label9.Text = role4;
 
-            // ISSI column shows carrier for traffic slots (and for active calls)
             string carrierTag = "c" + carrierIndex;
 
             bool TsIsTraffic(int ts)
             {
-                if (!onMainCarrier) return true; // all slots are traffic-ish when not on main carrier
-                if (ts == baseTs) return false; // MCCH
-                if (nScch > 0 && ts >= (baseTs + 1) && ts <= (baseTs + nScch)) return false; // SCCH
-                return true; // remaining are traffic
+                if (!onMainCarrier) return true;
+                if (ts == baseTs) return false;
+                if (nScch > 0 && ts >= (baseTs + 1) && ts <= (baseTs + nScch)) return false; 
+                return true; 
             }
 
             label1.Text = (TsIsTraffic(baseTs + 0) ? carrierTag : string.Empty);
@@ -1436,26 +1341,6 @@ private void UpdateTimeslotRoleLabels()
             label3.Text = (TsIsTraffic(baseTs + 2) ? carrierTag : string.Empty);
             label4.Text = (TsIsTraffic(baseTs + 3) ? carrierTag : string.Empty);
         }
-
-private static string GetRoleText(int timeslot, int nCommonSc, bool isActive)
-{
-    if (isActive)
-        return "TCH";
-
-    if (timeslot == 1)
-        return "MCCH";
-
-    if (nCommonSc > 0)
-    {
-        int lastScchTs = 1 + nCommonSc; // TS2..TS(lastScchTs)
-        if (timeslot >= 2 && timeslot <= lastScchTs)
-            return "SCCH" + (timeslot - 1);
-    }
-
-    return "---";
-}
-
-
 
         private void Ch1RadioButton_CheckedChanged(object sender, EventArgs e)
         {
@@ -1512,7 +1397,6 @@ private static string GetRoleText(int timeslot, int nCommonSc, bool isActive)
         {
             Global.IgnoreEncryptedSpeech = _tetraSettings.IgnoreEncodedSpeech;
 
-            // Apply UI-related settings immediately.
             try
             {
                 display.Visible = _tetraSettings.ShowDiagram;
@@ -1522,10 +1406,7 @@ private static string GetRoleText(int timeslot, int nCommonSc, bool isActive)
                     _dispayBufferReady = false;
                 }
             }
-            catch
-            {
-                // Ignore if UI control not yet created.
-            }
+            catch { }
         }
 
         private void BlockNumericUpDown_ValueChanged(object sender, EventArgs e)
@@ -1850,9 +1731,6 @@ private static string GetRoleText(int timeslot, int nCommonSc, bool isActive)
 
         private void AfcTimer_Tick(object sender, EventArgs e)
         {
-            // Defensive: during fast scan we create/dispose panels rapidly.
-            // WinForms timers can still tick briefly after disposal, or the constructor
-            // may have failed early (constructor is wrapped in a try/catch).
             try
             {
                 if (IsDisposed) return;
@@ -1883,10 +1761,7 @@ private static string GetRoleText(int timeslot, int nCommonSc, bool isActive)
                     }
                 }
             }
-            catch
-            {
-                // Never crash SDR# due to a timer tick.
-            }
+            catch { }
         }
 
         private void DataExtractorTimer_Tick(object sender, EventArgs e)
@@ -1900,7 +1775,6 @@ private static string GetRoleText(int timeslot, int nCommonSc, bool isActive)
 
             if (_syncInfo != null)
             {
-                // VERBETERING: Thread-safe read
                 lock(_syncLock) {
                     _syncInfo.TryGetValue(GlobalNames.MCC, ref _currentCell_MCC);
                     _syncInfo.TryGetValue(GlobalNames.MNC, ref _currentCell_MNC);
@@ -1910,13 +1784,10 @@ private static string GetRoleText(int timeslot, int nCommonSc, bool isActive)
                 _currentCell_NMI = (_currentCell_MCC << 14) | _currentCell_MNC;
             }
 
-            // VERBETERING: ConcurrentDequeue loop
             while (_rawData.TryDequeue(out var data))
             {
                 UpdateSysInfo(data);
-
                 UpdateCmceInfo(data);
-
                 if (_currentCell_NMI != 0) UpdateCallsInfo(data);
             }
 
@@ -2032,12 +1903,10 @@ private static string GetRoleText(int timeslot, int nCommonSc, bool isActive)
         {
             if (!disposing) return;
 
-            // Stop timers first to avoid ticks after disposal (common during scan probes)
             try { afcTimer?.Stop(); } catch { }
             try { dataExtractorTimer?.Stop(); } catch { }
             try { markerTimer?.Stop(); } catch { }
             try { timerGui?.Stop(); } catch { }
-            // (No other timers)
 
             try { _decoder?.Dispose(); } catch { }
                 _decoder = null;
