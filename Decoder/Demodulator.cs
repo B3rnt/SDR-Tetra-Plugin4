@@ -10,9 +10,8 @@ namespace SDRSharp.Tetra
         private const float TwoPi = (float)(Math.PI * 2.0);
         private const float PiDivTwo = (float)(Math.PI / 2.0);
         
-        // Veilige maximale buffer grootte voor high-speed devices (Airspy/SDRPlay)
-        // 65536 samples * max interpolation (normaal 4-8x) is ruim voldoende.
-        private const int MaxInputBuffer = 65536; 
+        // VEILIGHEID: Buffer vergroot naar 512k voor extreme sample rates (10 MSPS+)
+        private const int MaxInputBuffer = 524288; 
 
         // Training sequences
         private static readonly byte[] NormalTrainingSequence1 = { 1, 1, 0, 1, 0, 0, 0, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 0 };
@@ -58,15 +57,13 @@ namespace SDRSharp.Tetra
             burst.Type = BurstType.WaitBurst;
             burst.Length = 0;
 
-            // Alleen re-initialiseren als de sample rate daadwerkelijk verandert.
-            // We negeren veranderingen in iqBufferLength, zolang het maar onder MaxInputBuffer blijft.
-            if (_buffer == null || Math.Abs(iqSamplerate - _samplerateIn) > 1.0)
+            // FIX: Tolerantie verhoogd naar 100.0. Voorkomt onnodige resets bij lichte jitter van Airspy.
+            if (_buffer == null || Math.Abs(iqSamplerate - _samplerateIn) > 100.0)
             {
                 Initialize(iqSamplerate);
             }
             
-            // Veiligheidscheck: als de buffer groter is dan onze interne allocatie, kappen we het af
-            // om crashes te voorkomen. (Dit zou met 65536 zelden moeten gebeuren).
+            // Veiligheidscheck: cap op max buffer size
             int processLength = (iqBufferLength > MaxInputBuffer) ? MaxInputBuffer : iqBufferLength;
             int interpolatedLength = processLength * _interpolation;
 
@@ -74,7 +71,6 @@ namespace SDRSharp.Tetra
             if (_interpolation > 1)
             {
                 int srcIdx = 0;
-                // Zero-stuffing for interpolation
                 for (int i = 0; i < interpolatedLength; i++)
                 {
                     _bufferPtr[i + _tailBufferLength] = (i % _interpolation == 0) ? iqBuffer[srcIdx++] : default;
@@ -92,7 +88,6 @@ namespace SDRSharp.Tetra
             int maxWrite = _tempBuffer.Length;
             if (_writeAddress + interpolatedLength < maxWrite)
             {
-                // Calculate differential phase: Arg(Current * Conjugate(Prev))
                 for (int i = 0; i < interpolatedLength; i++)
                 {
                     _tempBufferPtr[_writeAddress++] = (_bufferPtr[i + _tailBufferLength] * _bufferPtr[i].Conjugate()).ArgumentFast();
@@ -100,7 +95,7 @@ namespace SDRSharp.Tetra
             }
             else 
             {
-                // Buffer overflow protection: reset pointers if we drift too far
+                // Overflow protection
                 _writeAddress = 0;
                 burst.Type = BurstType.WaitBurst;
                 return;
@@ -120,10 +115,9 @@ namespace SDRSharp.Tetra
             int trainingWindow = (_syncCounter > 0) ? (6 * _tailBufferLength) : _windowLength;
             if (_syncCounter > 0) _syncCounter--;
 
-            // Zorg dat we niet buiten de buffer lezen tijdens search
+            // Zorg dat we niet buiten de buffer lezen
             if (trainingWindow + ntsOffset + _nts1Buffer.Length >= _writeAddress) 
             {
-                 // Nog niet genoeg data voor een volledige search
                  return; 
             }
 
@@ -135,7 +129,7 @@ namespace SDRSharp.Tetra
             int idxNdb2 = 0;
             int idxSts = 0;
 
-            // Hot loop: Correlation against training sequences
+            // Hot loop
             for (int i = 0; i < trainingWindow; i++)
             {
                 float sum1 = 0, sum2 = 0, sumS = 0;
@@ -171,7 +165,6 @@ namespace SDRSharp.Tetra
                 if (sumS < minSts) { minSts = sumS; idxSts = i; }
             }
 
-            // Normalize errors
             minNdb1 /= _nts1Buffer.Length;
             minNdb2 /= _nts2Buffer.Length;
             minSts /= _stsBuffer.Length;
@@ -209,14 +202,13 @@ namespace SDRSharp.Tetra
             {
                 int sampleIdx = _symbolIndexMap[i]; 
                 
-                // Bounds check voor extractie
                 if ((offset + sampleIdx) < _writeAddress)
                 {
                     digitalBuffer[i] = _tempBufferPtr[offset + sampleIdx];
                 }
                 else
                 {
-                    digitalBuffer[i] = 0; // Padding als we aan het eind lopen
+                    digitalBuffer[i] = 0;
                 }
                 samplesUsed = sampleIdx;
             }
@@ -229,7 +221,6 @@ namespace SDRSharp.Tetra
             _writeAddress -= offset;
             if (_writeAddress < 0) _writeAddress = 0;
 
-            // Move remaining data to front
             Utils.Memcpy((void*)_tempBufferPtr, (void*)(_tempBufferPtr + offset), _writeAddress * sizeof(float));
 
             AngleToSymbol(burst.Ptr, digitalBuffer, 255);
@@ -247,7 +238,7 @@ namespace SDRSharp.Tetra
             
             _samplerate = _samplerateIn * _interpolation;
             
-            // We alloceren nu ALTIJD de maximale buffer, ongeacht de huidige input
+            // Altijd max buffer alloceren om re-allocs te voorkomen
             int maxInternalLen = MaxInputBuffer * _interpolation;
 
             _symbolLength = _samplerate / 18000.0;
@@ -257,22 +248,18 @@ namespace SDRSharp.Tetra
             _buffer = UnsafeBuffer.Create(maxInternalLen + _tailBufferLength, sizeof(Complex));
             _bufferPtr = (Complex*)(void*)_buffer;
             
-            // Temp buffer moet groot genoeg zijn voor continue stroom
             _tempBuffer = UnsafeBuffer.Create(maxInternalLen * 2, sizeof(float));
             _tempBufferPtr = (float*)(void*)_tempBuffer;
 
-            // Filters
             _filterLength = Math.Max((int)(_samplerate / 18000.0) | 1, 5);
             float[] coeffs = FilterBuilder.MakeSinc((float)_samplerate, 13500f, _filterLength);
             _matchedFilter = new IQFirFilter(coeffs);
             _fsFilter = new FirFilter(coeffs);
 
-            // Pre-calculate Offsets
             _ntsOffsetTMO = (int)(122.0 * _symbolLength + 0.5);
             _ntsOffsetDMO = (int)(115.0 * _symbolLength + 0.5);
             _stsOffset = (int)(107.0 * _symbolLength + 0.5);
 
-            // Pre-calculate Resampling Map
             _symbolIndexMap = new int[256];
             for (int i = 0; i < 256; i++)
             {
