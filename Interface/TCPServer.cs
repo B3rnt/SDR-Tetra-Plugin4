@@ -1,7 +1,10 @@
-﻿using System;
+using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace SDRSharp.Tetra
 {
@@ -11,18 +14,13 @@ namespace SDRSharp.Tetra
 
         private TcpListener _listener;
         private int _port = DefaultPortNumber;
-        private bool _serverRunning;
+        private volatile bool _serverRunning;
+        private CancellationTokenSource _cts;
 
-        private readonly List<TcpClient> _tcpClients = new List<TcpClient>();
-        private readonly List<TcpClient> _deadTcpClients = new List<TcpClient>();
+        // VERBETERING: Thread-safe collection en async afhandeling
+        private readonly ConcurrentDictionary<TcpClient, bool> _tcpClients = new ConcurrentDictionary<TcpClient, bool>();
 
-        public int ConnectedClients
-        {
-            get
-            {
-                return _tcpClients.Count;
-            }
-        }
+        public int ConnectedClients => _tcpClients.Count;
 
         ~TcpServer()
         {
@@ -39,158 +37,105 @@ namespace SDRSharp.Tetra
 
         public void FrameReady(byte[] frame, int actualLength)
         {
-            if (_tcpClients.Count == 0 || !_serverRunning) return;
+            if (_tcpClients.IsEmpty || !_serverRunning) return;
 
-            lock (_tcpClients)
+            // Fire-and-forget send to avoid blocking the demodulator
+            foreach (var kvp in _tcpClients)
             {
-                foreach (TcpClient client in _tcpClients)
+                var client = kvp.Key;
+                Task.Run(async () => 
                 {
                     try
                     {
                         if (client.Connected)
                         {
                             var stream = client.GetStream();
-                            stream.Write(frame, 0, frame.Length);
-                            stream.Flush();
+                            await stream.WriteAsync(frame, 0, actualLength).ConfigureAwait(false);
                         }
                         else
                         {
-                            _deadTcpClients.Add(client);
+                            RemoveClient(client);
                         }
                     }
                     catch
                     {
-                        _deadTcpClients.Add(client);
+                        RemoveClient(client);
                     }
-                }
-            }
-            if (_deadTcpClients.Count > 0)
-            {
-                CloseDead();
+                });
             }
         }
 
         public void Start(int port)
         {
+            Stop(); // Ensure clean state
             _port = port;
+            _cts = new CancellationTokenSource();
+            _serverRunning = true;
 
-            #region Listen / Async Accept
-
-            try
-            {
-                _listener = new TcpListener(IPAddress.Any, _port);
-                _listener.Start();
-                _listener.BeginAcceptTcpClient(TcpClientConnectCallback, _listener);
-                Console.WriteLine("Listening on {0}", _listener.LocalEndpoint);
-                _serverRunning = true;
-            }
-            catch
-            {
-                if (_listener != null)
-                {
-                    _listener.Stop();
-                    _listener = null;
-                }
-                throw;
-            }
-
-            #endregion
-
+            Task.Run(async () => await ListenLoop(_cts.Token));
         }
 
         public void Stop()
         {
             _serverRunning = false;
-            CloseAll();
+            _cts?.Cancel();
             
             try
             {
-                _listener.Stop();
+                _listener?.Stop();
             }
-            catch
+            catch { }
+
+            foreach (var client in _tcpClients.Keys)
             {
+                try { client.Close(); } catch { }
             }
+            _tcpClients.Clear();
         }
 
         #endregion
 
         #region Private Methods
 
-        private void CloseDead()
+        private async Task ListenLoop(CancellationToken token)
         {
-            lock (_tcpClients)
-            {
-                foreach (TcpClient client in _deadTcpClients)
-                {
-                    try
-                    {
-                        Console.WriteLine("Removing client from {0}", client.Client.RemoteEndPoint);
-                        if (client.Connected)
-                        {
-                            var stream = client.GetStream();
-                            stream.Close();
-                        }
-                        client.Close();
-                    }
-                    catch
-                    {
-                    }
-                    _tcpClients.Remove(client);
-                }
-            }
-            _deadTcpClients.Clear();
-        }
-
-        private void CloseAll()
-        {
-            lock (_tcpClients)
-            {
-                foreach (TcpClient client in _tcpClients)
-                {
-                    try
-                    {
-                        if (client.Connected)
-                        {
-                            var stream = client.GetStream();
-                            stream.Close();
-                        }
-                        client.Close();
-                    }
-                    catch
-                    {
-                    }
-                }
-                _tcpClients.Clear();
-            }
-        }
-
-        #endregion
-
-        #region Async Callback
-
-        private void TcpClientConnectCallback(IAsyncResult result)
-        {
-            if (!_serverRunning) return;
-
-            var listener = (TcpListener)result.AsyncState;
-            var client = listener.EndAcceptTcpClient(result);
-            lock (_tcpClients)
-            {
-                _tcpClients.Add(client);
-            }
-
-            Console.WriteLine("New client from {0}. {1} clients now connected.", client.Client.RemoteEndPoint, _tcpClients.Count);
-
             try
             {
-                _listener.BeginAcceptTcpClient(TcpClientConnectCallback, _listener);
+                _listener = new TcpListener(IPAddress.Any, _port);
+                _listener.Start();
+                Console.WriteLine("Listening on {0}", _listener.LocalEndpoint);
+
+                while (!token.IsCancellationRequested)
+                {
+                    try 
+                    {
+                        var client = await _listener.AcceptTcpClientAsync();
+                        _tcpClients.TryAdd(client, true);
+                        Console.WriteLine("New client from {0}. {1} clients connected.", client.Client.RemoteEndPoint, _tcpClients.Count);
+                    }
+                    catch (ObjectDisposedException) { break; }
+                    catch (Exception ex) 
+                    {
+                         Console.WriteLine("Accept error: " + ex.Message);
+                    }
+                }
             }
-            catch
+            catch (Exception ex)
             {
-                //Console.WriteLine("Terminating TCP Server");
+                Console.WriteLine("Server loop error: " + ex.Message);
+            }
+            finally
+            {
                 Stop();
             }
+        }
 
+        private void RemoveClient(TcpClient client)
+        {
+            if (_tcpClients.TryRemove(client, out _))
+            {
+                try { client.Close(); } catch { }
+            }
         }
 
         #endregion
