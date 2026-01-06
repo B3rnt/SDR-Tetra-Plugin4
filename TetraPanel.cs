@@ -28,11 +28,10 @@ namespace SDRSharp.Tetra
 
         private const int SamplesPerSymbol = 4;
         private const int BurstLengthBits = 510;
-        // AANGEPAST: Iets ruimer (256 ipv 255) om buffer overflows in de demodulator te voorkomen
         private const int BurstLengthSymbols = 256; 
         
-        // AANGEPAST: Veilige buffer size voor hoge sample rates (tot ~4MSPS)
-        private const int MaxIqBufferSize = 65536; 
+        // FIX: Buffer flink vergroot voor 10 MSPS support
+        private const int MaxIqBufferSize = 524288; 
 
         private const int ChannelActiveDelay = 10;
 
@@ -470,7 +469,7 @@ namespace SDRSharp.Tetra
             // Allow buffer to grow if samplerate is high
             if ((double)this._radioFifoBuffer.Length < (samplerate * 0.1)) // Keep ~100ms
             {
-                 // ComplexFifoStream auto-grows usually, but we check here
+                 // ComplexFifoStream auto-grows usually
             }
 
             this._radioFifoBuffer.Write(samples, length);
@@ -544,11 +543,10 @@ namespace SDRSharp.Tetra
 
         private unsafe void DecodingThread()
         {
-            // AANGEPAST: Grote buffer alloceren (65536) om hoge sample rates (Airspy) aan te kunnen
+            // FIX: Buffer flink vergroot (512k) voor Airspy
             _iqBuffer = UnsafeBuffer.Create(MaxIqBufferSize, sizeof(Complex));
             _iqBufferPtr = (Complex*)_iqBuffer;
 
-            // AANGEPAST: Iets ruimere symbol buffer (256)
             _symbolsBuffer = UnsafeBuffer.Create(BurstLengthSymbols, sizeof(float));
             _symbolsBufferPtr = (float*)_symbolsBuffer;
 
@@ -571,25 +569,23 @@ namespace SDRSharp.Tetra
 
             while (this._decodingIsStarted)
             {
-                // Wacht tot we een samplerate hebben en genoeg data
-                if ((_radioFifoBuffer == null) || (_radioFifoBuffer.Length < 1000) || (_iqSamplerate == 0))
+                // Wacht tot we een samplerate hebben
+                if (_iqSamplerate == 0)
                 {
                     _iqReadyEvent.WaitOne(50);
                     continue;
                 }
                 
-                // AANGEPAST: Dynamische berekening van benodigde samples.
-                // Een Tetra burst is ~14.2ms. We lezen iets meer (15ms) om overlap/sync mogelijk te maken.
-                // Dit werkt voor 32kHz (RTL) maar ook voor 200kHz+ (Airspy).
-                int samplesToRead = (int)(_iqSamplerate * 0.015);
+                // FIX: Lees kleinere chunks (5ms) om buffer overflow te voorkomen bij hoge snelheden.
+                // Dit zorgt voor betere doorvoer en minder latency.
+                int samplesToRead = (int)(_iqSamplerate * 0.005);
                 
-                // Veiligheidsgrenzen
-                if (samplesToRead < 510) samplesToRead = 510; // Minimaal nodig voor demodulator
+                if (samplesToRead < 510) samplesToRead = 510; 
                 if (samplesToRead > MaxIqBufferSize) samplesToRead = MaxIqBufferSize;
 
-                if (_radioFifoBuffer.Length < samplesToRead)
+                if (_radioFifoBuffer == null || _radioFifoBuffer.Length < samplesToRead)
                 {
-                    _iqReadyEvent.WaitOne(10); // Even wachten op meer data
+                    _iqReadyEvent.WaitOne(10);
                     continue;
                 }
 
@@ -597,13 +593,11 @@ namespace SDRSharp.Tetra
 
                 this._radioFifoBuffer.Read(this._iqBufferPtr, samplesToRead);
                 
-                // Geef het dynamische aantal samples door aan de demodulator
                 this._demodulator.ProcessBuffer(burst, this._iqBufferPtr, this._iqSamplerate, samplesToRead, this._symbolsBufferPtr);
                 
                 if (burst.Type == BurstType.WaitBurst)
                     continue;
 
-                // De symbols buffer is nu 256 lang, maar AFC checkt meestal 255. Dit is veilig.
                 AutomaticFrequencyControl(_symbolsBufferPtr, 255);
 
                 if (_tetraSettings.UdpEnabled && server != null)
@@ -623,7 +617,6 @@ namespace SDRSharp.Tetra
                 if (_needDisplayBufferUpdate)
                 {
                     _needDisplayBufferUpdate = false;
-                    // Copy slechts de zichtbare symbols
                     Utils.Memcpy(_displayBufferPtr, _symbolsBufferPtr, _displayBuffer.Length * sizeof(float));
                     _dispayBufferReady = true;
                 }
