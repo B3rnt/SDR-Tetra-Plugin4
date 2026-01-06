@@ -10,6 +10,10 @@ namespace SDRSharp.Tetra
         private const float TwoPi = (float)(Math.PI * 2.0);
         private const float PiDivTwo = (float)(Math.PI / 2.0);
         
+        // Veilige maximale buffer grootte voor high-speed devices (Airspy/SDRPlay)
+        // 65536 samples * max interpolation (normaal 4-8x) is ruim voldoende.
+        private const int MaxInputBuffer = 65536; 
+
         // Training sequences
         private static readonly byte[] NormalTrainingSequence1 = { 1, 1, 0, 1, 0, 0, 0, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 0 };
         private static readonly byte[] NormalTrainingSequence2 = { 0, 1, 1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0 };
@@ -25,9 +29,8 @@ namespace SDRSharp.Tetra
 
         private double _samplerateIn;
         private double _samplerate;
-        private int _length;
         private int _interpolation;
-        private int _filterLength; // <--- DEZE WAS VERGETEN
+        private int _filterLength;
         
         // Training buffers
         private UnsafeBuffer _nts1Buffer;
@@ -37,7 +40,6 @@ namespace SDRSharp.Tetra
         private UnsafeBuffer _stsBuffer;
         private unsafe float* _stsBufferPtr;
 
-        // Optimization: Pre-calculated map to avoid Math.Round in hot loops
         private int[] _symbolIndexMap; 
         
         private int _writeAddress;
@@ -56,45 +58,58 @@ namespace SDRSharp.Tetra
             burst.Type = BurstType.WaitBurst;
             burst.Length = 0;
 
-            // Re-init if sample rate changes or first run
-            if (_buffer == null || Math.Abs(iqSamplerate - _samplerateIn) > 0.1)
+            // Alleen re-initialiseren als de sample rate daadwerkelijk verandert.
+            // We negeren veranderingen in iqBufferLength, zolang het maar onder MaxInputBuffer blijft.
+            if (_buffer == null || Math.Abs(iqSamplerate - _samplerateIn) > 1.0)
             {
-                Initialize(iqSamplerate, iqBufferLength);
+                Initialize(iqSamplerate);
             }
+            
+            // Veiligheidscheck: als de buffer groter is dan onze interne allocatie, kappen we het af
+            // om crashes te voorkomen. (Dit zou met 65536 zelden moeten gebeuren).
+            int processLength = (iqBufferLength > MaxInputBuffer) ? MaxInputBuffer : iqBufferLength;
+            int interpolatedLength = processLength * _interpolation;
 
             // 1. Interpolation / Copy
             if (_interpolation > 1)
             {
                 int srcIdx = 0;
                 // Zero-stuffing for interpolation
-                for (int i = 0; i < _length; i++)
+                for (int i = 0; i < interpolatedLength; i++)
                 {
                     _bufferPtr[i + _tailBufferLength] = (i % _interpolation == 0) ? iqBuffer[srcIdx++] : default;
                 }
             }
             else
             {
-                Utils.Memcpy((void*)(_bufferPtr + _tailBufferLength), (void*)iqBuffer, _length * sizeof(Complex));
+                Utils.Memcpy((void*)(_bufferPtr + _tailBufferLength), (void*)iqBuffer, interpolatedLength * sizeof(Complex));
             }
 
             // 2. Filter & Differential Phase
-            _matchedFilter.Process(_bufferPtr + _tailBufferLength, _length);
+            _matchedFilter.Process(_bufferPtr + _tailBufferLength, interpolatedLength);
 
             // Check boundaries
             int maxWrite = _tempBuffer.Length;
-            if (_writeAddress + _length < maxWrite)
+            if (_writeAddress + interpolatedLength < maxWrite)
             {
                 // Calculate differential phase: Arg(Current * Conjugate(Prev))
-                for (int i = 0; i < _length; i++)
+                for (int i = 0; i < interpolatedLength; i++)
                 {
                     _tempBufferPtr[_writeAddress++] = (_bufferPtr[i + _tailBufferLength] * _bufferPtr[i].Conjugate()).ArgumentFast();
                 }
+            }
+            else 
+            {
+                // Buffer overflow protection: reset pointers if we drift too far
+                _writeAddress = 0;
+                burst.Type = BurstType.WaitBurst;
+                return;
             }
 
             // Move tail for next burst (overlap)
             for (int i = 0; i < _tailBufferLength; i++)
             {
-                _bufferPtr[i] = _bufferPtr[_length + i];
+                _bufferPtr[i] = _bufferPtr[interpolatedLength + i];
             }
 
             // 3. Synchronization Search
@@ -102,9 +117,15 @@ namespace SDRSharp.Tetra
 
             int ntsOffset = (burst.Mode == Mode.TMO) ? _ntsOffsetTMO : _ntsOffsetDMO;
             
-            // Search window size depends on if we are tracking or searching
             int trainingWindow = (_syncCounter > 0) ? (6 * _tailBufferLength) : _windowLength;
             if (_syncCounter > 0) _syncCounter--;
+
+            // Zorg dat we niet buiten de buffer lezen tijdens search
+            if (trainingWindow + ntsOffset + _nts1Buffer.Length >= _writeAddress) 
+            {
+                 // Nog niet genoeg data voor een volledige search
+                 return; 
+            }
 
             float minNdb1 = float.MaxValue;
             float minNdb2 = float.MaxValue;
@@ -123,7 +144,6 @@ namespace SDRSharp.Tetra
                 for (int k = 0; k < _nts1Buffer.Length; k++)
                 {
                     float diff = _nts1BufferPtr[k] - _tempBufferPtr[i + k + ntsOffset];
-                    // Phase wrapping optimization (Critical for noisy signals!)
                     if (diff > Pi) diff -= TwoPi;
                     else if (diff < -Pi) diff += TwoPi;
                     sum1 += diff * diff;
@@ -175,7 +195,7 @@ namespace SDRSharp.Tetra
                     offset = idxSts;
                     burst.Type = BurstType.SYNC;
                 }
-                _syncCounter = 8; // Lock sync for next 8 frames
+                _syncCounter = 8; 
             }
             else
             {
@@ -183,13 +203,21 @@ namespace SDRSharp.Tetra
                 offset = _tailBufferLength * 2;
             }
 
-            // 5. Symbol Extraction (Resampling)
-            // Optimization: Used pre-calculated index map instead of Math.Round in loop
+            // 5. Symbol Extraction
             int samplesUsed = 0;
             for (int i = 0; i < 256; i++)
             {
-                int sampleIdx = _symbolIndexMap[i]; // Fast lookup
-                digitalBuffer[i] = _tempBufferPtr[offset + sampleIdx];
+                int sampleIdx = _symbolIndexMap[i]; 
+                
+                // Bounds check voor extractie
+                if ((offset + sampleIdx) < _writeAddress)
+                {
+                    digitalBuffer[i] = _tempBufferPtr[offset + sampleIdx];
+                }
+                else
+                {
+                    digitalBuffer[i] = 0; // Padding als we aan het eind lopen
+                }
                 samplesUsed = sampleIdx;
             }
             
@@ -204,12 +232,11 @@ namespace SDRSharp.Tetra
             // Move remaining data to front
             Utils.Memcpy((void*)_tempBufferPtr, (void*)(_tempBufferPtr + offset), _writeAddress * sizeof(float));
 
-            // Convert to bits
             AngleToSymbol(burst.Ptr, digitalBuffer, 255);
             burst.Length = 510;
         }
 
-        private unsafe void Initialize(double iqSamplerate, int iqBufferLength)
+        private unsafe void Initialize(double iqSamplerate)
         {
             FreeBuffers();
 
@@ -219,17 +246,19 @@ namespace SDRSharp.Tetra
                 _interpolation++;
             
             _samplerate = _samplerateIn * _interpolation;
-            _length = iqBufferLength * _interpolation;
             
+            // We alloceren nu ALTIJD de maximale buffer, ongeacht de huidige input
+            int maxInternalLen = MaxInputBuffer * _interpolation;
+
             _symbolLength = _samplerate / 18000.0;
             _windowLength = (int)(_symbolLength * 255.0 + 0.5);
             _tailBufferLength = (int)(_symbolLength + 0.5);
 
-            _buffer = UnsafeBuffer.Create(_length + _tailBufferLength, sizeof(Complex));
+            _buffer = UnsafeBuffer.Create(maxInternalLen + _tailBufferLength, sizeof(Complex));
             _bufferPtr = (Complex*)(void*)_buffer;
             
-            // Allocate larger temp buffer to be safe
-            _tempBuffer = UnsafeBuffer.Create((int)_samplerate, sizeof(float));
+            // Temp buffer moet groot genoeg zijn voor continue stroom
+            _tempBuffer = UnsafeBuffer.Create(maxInternalLen * 2, sizeof(float));
             _tempBufferPtr = (float*)(void*)_tempBuffer;
 
             // Filters
@@ -257,7 +286,6 @@ namespace SDRSharp.Tetra
 
         private unsafe void CreateFrameSynchronization()
         {
-            // Prepare training sequence buffers (interpolated)
             double symLen = _samplerate / 18000.0;
             CreateFsBuffers(symLen);
 
@@ -265,7 +293,6 @@ namespace SDRSharp.Tetra
             PopulateTrainingBuffer(NormalTrainingSequence2, _nts2BufferPtr, _nts2Buffer.Length, symLen);
             PopulateTrainingBuffer(SynchronizationTrainingSequence, _stsBufferPtr, _stsBuffer.Length, symLen);
 
-            // Filter them to match received signal characteristics
             _fsFilter.Process(_nts1BufferPtr, _nts1Buffer.Length);
             _fsFilter.Process(_nts2BufferPtr, _nts2Buffer.Length);
             _fsFilter.Process(_stsBufferPtr, _stsBuffer.Length);
@@ -308,19 +335,16 @@ namespace SDRSharp.Tetra
         private float SymbolToAngle(byte[] seq, int idx)
         {
             if (idx >= seq.Length) return 0.0f;
-            float val = (seq[idx * 2 + 1] == 1) ? 2.356194f : 0.7853982f; // 3pi/4 or pi/4
+            float val = (seq[idx * 2 + 1] == 1) ? 2.356194f : 0.7853982f; 
             return (seq[idx * 2] == 1) ? -val : val;
         }
 
         private unsafe void AngleToSymbol(byte* bitsBuffer, float* angles, int count)
         {
-            // Simple hard slicer
             while (count-- > 0)
             {
                 float a = *angles++;
-                // Bit 1: Is it negative?
                 *bitsBuffer++ = (a < 0) ? (byte)1 : (byte)0;
-                // Bit 2: Is absolute value > pi/2?
                 *bitsBuffer++ = (Math.Abs(a) > PiDivTwo) ? (byte)1 : (byte)0;
             }
         }
