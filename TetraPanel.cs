@@ -293,7 +293,7 @@ namespace SDRSharp.Tetra
                 autoCheckBox.Checked = _tetraSettings.AutoPlay;
                 AutoCheckBox_CheckedChanged(null, null);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 MessageBox.Show("Tetra plugin exception -" + ex.ToString());
             }
@@ -623,7 +623,7 @@ namespace SDRSharp.Tetra
             {
                  server = new UdpClient("127.0.0.1", _tetraSettings.UdpPort);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                  // Handle error, maybe logging. Or disable UDP.
                  // We continue without UDP if it fails to bind.
