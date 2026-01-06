@@ -104,28 +104,6 @@ namespace SDRSharp.Tetra.MultiChannel
             {
                 var t = control.GetType();
 
-                // Try to derive center frequency using a VFO/center shift if present.
-                foreach (var name in new[] { "FrequencyShift", "CenterFrequencyShift", "VfoShift", "VFOShift", "IFShift", "IfShift" })
-                {
-                    var p = t.GetProperty(name);
-                    if (p == null) continue;
-                    var v = p.GetValue(control, null);
-                    if (v == null) continue;
-                    double shift = v switch
-                    {
-                        int i => i,
-                        long l => l,
-                        float f => f,
-                        double d => d,
-                        _ => double.NaN
-                    };
-                    if (!double.IsNaN(shift) && Math.Abs(shift) > 0.1)
-                    {
-                        // In SDR#, tuned frequency = center + shift
-                        return (long)Math.Round(control.Frequency - shift);
-                    }
-                }
-
                 // Try common property names used across SDR# builds/forks.
                 foreach (var name in new[]
                 {
@@ -160,25 +138,6 @@ namespace SDRSharp.Tetra.MultiChannel
                     }
                 }
 
-                // Some forks expose center frequency on nested objects (Source/Frontend/Receiver).
-                foreach (var containerName in new[] { "Source", "Frontend", "Device", "Receiver", "Radio" })
-                {
-                    var cp = t.GetProperty(containerName);
-                    if (cp == null) continue;
-                    var obj = cp.GetValue(control, null);
-                    if (obj == null) continue;
-                    var ot = obj.GetType();
-                    foreach (var name in new[] { "CenterFrequency", "LOFrequency", "RfFrequency", "RFFrequency", "DeviceFrequency", "HardwareFrequency" })
-                    {
-                        var p = ot.GetProperty(name);
-                        if (p == null) continue;
-                        var v = p.GetValue(obj, null);
-                        if (v is long l) return l;
-                        if (v is int i) return i;
-                        if (v is double d) return (long)d;
-                    }
-                }
-
                 // Fall back to the currently tuned frequency.
                 return control.Frequency;
             }
@@ -202,7 +161,6 @@ namespace SDRSharp.Tetra.MultiChannel
         {
             if (!_settings.Enabled) return;
             if (_settings.FrequencyHz <= 0) return;
-            if (samplerate <= 0) return; // cannot configure DDC/resampler
 
             var centerHz = GetCenterFrequencyHz(_control);
 
