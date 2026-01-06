@@ -1,455 +1,344 @@
-﻿// Decompiled with JetBrains decompiler
-// Type: SDRSharp.Tetra.Demodulator
-// Assembly: SDRSharp.Tetra, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null
-// MVID: C3C6F0AC-F9E4-4213-8F19-E6F878CA40B0
-// Assembly location: E:\RADIO\SdrSharp1810\Plugins\tetra1.0.0.0\SDRSharp.Tetra.dll
-
 using SDRSharp.Radio;
 using System;
+using System.Runtime.CompilerServices;
 
 namespace SDRSharp.Tetra
 {
-    internal class Demodulator : System.IDisposable
+    internal class Demodulator : IDisposable
     {
-        private const float Pi34 = 2.356194f;
-        private const float Pi14 = 0.7853982f;
-        private const float Pi12 = 1.570796f;
-        private const float Pi2 = 6.283185f;
-        private static readonly byte[] NormalTrainingSequence1 = new byte[22]
-        {
-      (byte) 1,
-      (byte) 1,
-      (byte) 0,
-      (byte) 1,
-      (byte) 0,
-      (byte) 0,
-      (byte) 0,
-      (byte) 0,
-      (byte) 1,
-      (byte) 1,
-      (byte) 1,
-      (byte) 0,
-      (byte) 1,
-      (byte) 0,
-      (byte) 0,
-      (byte) 1,
-      (byte) 1,
-      (byte) 1,
-      (byte) 0,
-      (byte) 1,
-      (byte) 0,
-      (byte) 0
-        };
-        private static readonly byte[] NormalTrainingSequence2 = new byte[22]
-        {
-      (byte) 0,
-      (byte) 1,
-      (byte) 1,
-      (byte) 1,
-      (byte) 1,
-      (byte) 0,
-      (byte) 1,
-      (byte) 0,
-      (byte) 0,
-      (byte) 1,
-      (byte) 0,
-      (byte) 0,
-      (byte) 0,
-      (byte) 0,
-      (byte) 1,
-      (byte) 1,
-      (byte) 0,
-      (byte) 1,
-      (byte) 1,
-      (byte) 1,
-      (byte) 1,
-      (byte) 0
-        };
-        private static readonly byte[] synchronizationTrainingSequence = new byte[38]
-        {
-      (byte) 1,
-      (byte) 1,
-      (byte) 0,
-      (byte) 0,
-      (byte) 0,
-      (byte) 0,
-      (byte) 0,
-      (byte) 1,
-      (byte) 1,
-      (byte) 0,
-      (byte) 0,
-      (byte) 1,
-      (byte) 1,
-      (byte) 1,
-      (byte) 0,
-      (byte) 0,
-      (byte) 1,
-      (byte) 1,
-      (byte) 1,
-      (byte) 0,
-      (byte) 1,
-      (byte) 0,
-      (byte) 0,
-      (byte) 1,
-      (byte) 1,
-      (byte) 1,
-      (byte) 0,
-      (byte) 0,
-      (byte) 0,
-      (byte) 0,
-      (byte) 0,
-      (byte) 1,
-      (byte) 1,
-      (byte) 0,
-      (byte) 0,
-      (byte) 1,
-      (byte) 1,
-      (byte) 1
-        };
-        private static readonly float[] freqCorrectionFeild = new float[40]
-        {
-      -2.356194f,
-      -2.356194f,
-      -2.356194f,
-      -2.356194f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      0.7853982f,
-      -2.356194f,
-      -2.356194f,
-      -2.356194f,
-      -2.356194f
-        };
-        private const int NtsSquenceOffsetTMO = 122;
-        private const int NtsSquenceOffsetDMO = 115;
-        private const int StsSquenceOffset = 107;
-        private const int SmallTrainingWindow = 6;
-        private const int BuffersOverlap = 2;
-        private const int SyncLostValue = 8;
-        private const double SymbolRate = 18000.0;
+        private const float Pi = (float)Math.PI;
+        private const float TwoPi = (float)(Math.PI * 2.0);
+        private const float PiDivTwo = (float)(Math.PI / 2.0);
+        
+        // Training sequences
+        private static readonly byte[] NormalTrainingSequence1 = { 1, 1, 0, 1, 0, 0, 0, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 0 };
+        private static readonly byte[] NormalTrainingSequence2 = { 0, 1, 1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0 };
+        private static readonly byte[] SynchronizationTrainingSequence = { 1, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1 };
+
         private UnsafeBuffer _buffer;
         private unsafe Complex* _bufferPtr;
         private UnsafeBuffer _tempBuffer;
         private unsafe float* _tempBufferPtr;
-        private int _filterLength;
+        
         private IQFirFilter _matchedFilter;
+        private FirFilter _fsFilter;
+
         private double _samplerateIn;
         private double _samplerate;
         private int _length;
         private int _interpolation;
+        
+        // Training buffers
         private UnsafeBuffer _nts1Buffer;
         private unsafe float* _nts1BufferPtr;
         private UnsafeBuffer _nts2Buffer;
         private unsafe float* _nts2BufferPtr;
         private UnsafeBuffer _stsBuffer;
         private unsafe float* _stsBufferPtr;
+
+        // Optimization: Pre-calculated map to avoid Math.Round in hot loops
+        private int[] _symbolIndexMap; 
+        
         private int _writeAddress;
         private double _symbolLength;
         private int _windowLength;
-        private int _offset;
-        private FirFilter _fsFilter;
         private int _tailBufferLength;
         private int _syncCounter;
-        private int _ntsOffset;
+        
+        // Offsets
+        private int _ntsOffsetTMO;
+        private int _ntsOffsetDMO;
         private int _stsOffset;
-        private float _ndb1minSum;
-        private int _ndb1Index;
-        private float _ndb2minSum;
-        private int _ndb2Index;
-        private float _stsMinSum;
-        private int _stsIndex;
-        private int _trainingWindow;
-        private float _ndb1sum;
-        private float _ndb2sum;
-        private float _stsSum;
-        private float _sample;
-        private float _training;
 
-        public unsafe void ProcessBuffer(
-          Burst burst,
-          Complex* iqBuffer,
-          double iqSamplerate,
-          int iqBufferLength,
-          float* digitalBuffer)
+        public unsafe void ProcessBuffer(Burst burst, Complex* iqBuffer, double iqSamplerate, int iqBufferLength, float* digitalBuffer)
         {
             burst.Type = BurstType.WaitBurst;
             burst.Length = 0;
-            if (this._buffer == null || iqSamplerate != this._samplerateIn)
+
+            // Re-init if sample rate changes or first run
+            if (_buffer == null || Math.Abs(iqSamplerate - _samplerateIn) > 0.1)
             {
-                // Sample-rate changed (or first init). Free old buffers to avoid leaks.
-                FreeBuffers();
-                this._samplerateIn = iqSamplerate;
-                this._samplerate = this._samplerateIn;
-                this._interpolation = 1;
-                while (this._samplerateIn * (double)this._interpolation < 90000.0)
-                    ++this._interpolation;
-                this._samplerate = this._samplerateIn * (double)this._interpolation;
-                this._length = iqBufferLength * this._interpolation;
-                this._symbolLength = this._samplerate / 18000.0;
-                this._windowLength = (int)Math.Round(this._symbolLength * (double)byte.MaxValue);
-                this._writeAddress = 0;
-                this._tailBufferLength = (int)Math.Round(this._symbolLength);
-                this._syncCounter = 0;
-                this._buffer = UnsafeBuffer.Create(this._length + this._tailBufferLength, sizeof(Complex));
-                this._bufferPtr = (Complex*)(void*)this._buffer;
-                this._tempBuffer = UnsafeBuffer.Create((int)this._samplerate, 4);
-                this._tempBufferPtr = (float*)(void*)this._tempBuffer;
-                this._filterLength = Math.Max((int)(this._samplerate / 18000.0) | 1, 5);
-                float[] coefficients = FilterBuilder.MakeSinc(this._samplerate, 13500.0, this._filterLength);
-                this._matchedFilter = new IQFirFilter(coefficients);
-                this._fsFilter = new FirFilter(coefficients);
-                this.CreateFrameSynchronization();
+                Initialize(iqSamplerate, iqBufferLength);
             }
-            if (this._interpolation > 1)
+
+            // 1. Interpolation / Copy
+            if (_interpolation > 1)
             {
-                int num = 0;
-                Complex complex = new Complex(0.0f, 0.0f);
-                for (int index = 0; index < this._length; ++index)
-                    this._bufferPtr[index + this._tailBufferLength] = index % this._interpolation == 0 ? iqBuffer[num++] : complex;
+                int srcIdx = 0;
+                // Zero-stuffing for interpolation
+                for (int i = 0; i < _length; i++)
+                {
+                    _bufferPtr[i + _tailBufferLength] = (i % _interpolation == 0) ? iqBuffer[srcIdx++] : default;
+                }
             }
             else
-                Radio.Utils.Memcpy((void*)(this._bufferPtr + this._tailBufferLength), (void*)iqBuffer, this._length * sizeof(Complex));
-            this._matchedFilter.Process(this._bufferPtr + this._tailBufferLength, this._length);
-            if (this._writeAddress + this._length < this._tempBuffer.Length)
             {
-                for (int index = 0; index < this._length; ++index)
+                Utils.Memcpy((void*)(_bufferPtr + _tailBufferLength), (void*)iqBuffer, _length * sizeof(Complex));
+            }
+
+            // 2. Filter & Differential Phase
+            _matchedFilter.Process(_bufferPtr + _tailBufferLength, _length);
+
+            // Check boundaries
+            int maxWrite = _tempBuffer.Length;
+            if (_writeAddress + _length < maxWrite)
+            {
+                // Calculate differential phase: Arg(Current * Conjugate(Prev))
+                for (int i = 0; i < _length; i++)
                 {
-                    this._tempBufferPtr[this._writeAddress] = (this._bufferPtr[index + this._tailBufferLength] * this._bufferPtr[index].Conjugate()).ArgumentFast();
-                    ++this._writeAddress;
+                    _tempBufferPtr[_writeAddress++] = (_bufferPtr[i + _tailBufferLength] * _bufferPtr[i].Conjugate()).ArgumentFast();
                 }
             }
-            for (int index = 0; index < this._tailBufferLength; ++index)
-                this._bufferPtr[index] = this._bufferPtr[this._length + index];
-            if (this._writeAddress < this._windowLength * 2)
-                return;
-            this._ntsOffset = burst.Mode == Mode.TMO ? (int)Math.Round(122.0 * this._symbolLength) : (int)Math.Round(115.0 * this._symbolLength);
-            this._stsOffset = (int)Math.Round(107.0 * this._symbolLength);
-            this._ndb1minSum = float.MaxValue;
-            this._ndb1Index = 0;
-            this._ndb2minSum = float.MaxValue;
-            this._ndb2Index = 0;
-            this._stsMinSum = float.MaxValue;
-            this._stsIndex = 0;
-            this._trainingWindow = this._syncCounter > 0 ? 6 * this._tailBufferLength : this._windowLength;
-            if (this._syncCounter > 0)
-                --this._syncCounter;
-            for (int index1 = 0; index1 < this._trainingWindow; ++index1)
+
+            // Move tail for next burst (overlap)
+            for (int i = 0; i < _tailBufferLength; i++)
             {
-                this._ndb1sum = 0.0f;
-                this._ndb2sum = 0.0f;
-                this._stsSum = 0.0f;
-                for (int index2 = 0; index2 < this._nts1Buffer.Length; ++index2)
-                {
-                    this._sample = this._tempBufferPtr[index1 + index2 + this._ntsOffset];
-                    this._training = this._nts1BufferPtr[index2];
-                    this._ndb1sum += (float)(((double)this._training - (double)this._sample) * ((double)this._training - (double)this._sample));
-                }
-                if ((double)this._ndb1sum < (double)this._ndb1minSum)
-                {
-                    this._ndb1minSum = this._ndb1sum;
-                    this._ndb1Index = index1;
-                }
-                for (int index2 = 0; index2 < this._nts2Buffer.Length; ++index2)
-                {
-                    this._sample = this._tempBufferPtr[index1 + index2 + this._ntsOffset];
-                    this._training = this._nts2BufferPtr[index2];
-                    this._ndb2sum += (float)(((double)this._training - (double)this._sample) * ((double)this._training - (double)this._sample));
-                }
-                if ((double)this._ndb2sum < (double)this._ndb2minSum)
-                {
-                    this._ndb2minSum = this._ndb2sum;
-                    this._ndb2Index = index1;
-                }
-                for (int index2 = 0; index2 < this._stsBuffer.Length; ++index2)
-                {
-                    this._sample = this._tempBufferPtr[index1 + index2 + this._stsOffset];
-                    this._training = this._stsBufferPtr[index2];
-                    this._stsSum += (float)(((double)this._training - (double)this._sample) * ((double)this._training - (double)this._sample));
-                }
-                if ((double)this._stsSum < (double)this._stsMinSum)
-                {
-                    this._stsMinSum = this._stsSum;
-                    this._stsIndex = index1;
-                }
+                _bufferPtr[i] = _bufferPtr[_length + i];
             }
-            this._ndb1minSum /= (float)this._nts1Buffer.Length;
-            this._ndb2minSum /= (float)this._nts2Buffer.Length;
-            this._stsMinSum /= (float)this._stsBuffer.Length;
-            if ((double)this._ndb1minSum < 1.0 || (double)this._ndb2minSum < 1.0 || (double)this._stsMinSum < 1.0)
+
+            // 3. Synchronization Search
+            if (_writeAddress < _windowLength * 2) return;
+
+            int ntsOffset = (burst.Mode == Mode.TMO) ? _ntsOffsetTMO : _ntsOffsetDMO;
+            
+            // Search window size depends on if we are tracking or searching
+            int trainingWindow = (_syncCounter > 0) ? (6 * _tailBufferLength) : _windowLength;
+            if (_syncCounter > 0) _syncCounter--;
+
+            float minNdb1 = float.MaxValue;
+            float minNdb2 = float.MaxValue;
+            float minSts = float.MaxValue;
+            
+            int idxNdb1 = 0;
+            int idxNdb2 = 0;
+            int idxSts = 0;
+
+            // Hot loop: Correlation against training sequences
+            for (int i = 0; i < trainingWindow; i++)
             {
-                if ((double)this._ndb1minSum < (double)this._ndb2minSum && (double)this._ndb1minSum < (double)this._stsMinSum)
+                float sum1 = 0, sum2 = 0, sumS = 0;
+
+                // NTS1
+                for (int k = 0; k < _nts1Buffer.Length; k++)
                 {
-                    this._offset = this._ndb1Index;
+                    float diff = _nts1BufferPtr[k] - _tempBufferPtr[i + k + ntsOffset];
+                    // Phase wrapping optimization (Critical for noisy signals!)
+                    if (diff > Pi) diff -= TwoPi;
+                    else if (diff < -Pi) diff += TwoPi;
+                    sum1 += diff * diff;
+                }
+                if (sum1 < minNdb1) { minNdb1 = sum1; idxNdb1 = i; }
+
+                // NTS2
+                for (int k = 0; k < _nts2Buffer.Length; k++)
+                {
+                    float diff = _nts2BufferPtr[k] - _tempBufferPtr[i + k + ntsOffset];
+                    if (diff > Pi) diff -= TwoPi;
+                    else if (diff < -Pi) diff += TwoPi;
+                    sum2 += diff * diff;
+                }
+                if (sum2 < minNdb2) { minNdb2 = sum2; idxNdb2 = i; }
+
+                // STS
+                for (int k = 0; k < _stsBuffer.Length; k++)
+                {
+                    float diff = _stsBufferPtr[k] - _tempBufferPtr[i + k + _stsOffset];
+                    if (diff > Pi) diff -= TwoPi;
+                    else if (diff < -Pi) diff += TwoPi;
+                    sumS += diff * diff;
+                }
+                if (sumS < minSts) { minSts = sumS; idxSts = i; }
+            }
+
+            // Normalize errors
+            minNdb1 /= _nts1Buffer.Length;
+            minNdb2 /= _nts2Buffer.Length;
+            minSts /= _stsBuffer.Length;
+
+            // 4. Decision
+            int offset = 0;
+            if (minNdb1 < 1.0f || minNdb2 < 1.0f || minSts < 1.0f)
+            {
+                if (minNdb1 < minNdb2 && minNdb1 < minSts)
+                {
+                    offset = idxNdb1;
                     burst.Type = BurstType.NDB1;
                 }
-                else if ((double)this._ndb2minSum < (double)this._ndb1minSum && (double)this._ndb2minSum < (double)this._stsMinSum)
+                else if (minNdb2 < minNdb1 && minNdb2 < minSts)
                 {
-                    this._offset = this._ndb2Index;
+                    offset = idxNdb2;
                     burst.Type = BurstType.NDB2;
                 }
                 else
                 {
-                    this._offset = this._stsIndex;
+                    offset = idxSts;
                     burst.Type = BurstType.SYNC;
                 }
-                this._syncCounter = 8;
+                _syncCounter = 8; // Lock sync for next 8 frames
             }
             else
             {
                 burst.Type = BurstType.None;
-                this._offset = this._tailBufferLength * 2;
+                offset = _tailBufferLength * 2;
             }
-            int index3 = 0;
-            int num1 = 0;
-            for (; index3 < 256; ++index3)
+
+            // 5. Symbol Extraction (Resampling)
+            // Optimization: Used pre-calculated index map instead of Math.Round in loop
+            int samplesUsed = 0;
+            for (int i = 0; i < 256; i++)
             {
-                num1 = (int)Math.Round((double)index3 * this._symbolLength);
-                digitalBuffer[index3] = this._tempBufferPtr[this._offset + num1];
+                int sampleIdx = _symbolIndexMap[i]; // Fast lookup
+                digitalBuffer[i] = _tempBufferPtr[offset + sampleIdx];
+                samplesUsed = sampleIdx;
             }
-            this._offset += num1;
-            this._offset -= this._tailBufferLength * 2;
-            if (this._offset < 0)
-                this._offset = 0;
-            this._writeAddress -= this._offset;
-            if (this._writeAddress < 0)
-                this._writeAddress = 0;
-            Radio.Utils.Memcpy((void*)this._tempBufferPtr, (void*)(this._tempBufferPtr + this._offset), this._writeAddress * 4);
-            this.AngleToSymbol(burst.Ptr, digitalBuffer, (int)byte.MaxValue);
+            
+            // Advance buffer
+            offset += samplesUsed;
+            offset -= _tailBufferLength * 2;
+            if (offset < 0) offset = 0;
+
+            _writeAddress -= offset;
+            if (_writeAddress < 0) _writeAddress = 0;
+
+            // Move remaining data to front
+            Utils.Memcpy((void*)_tempBufferPtr, (void*)(_tempBufferPtr + offset), _writeAddress * sizeof(float));
+
+            // Convert to bits
+            AngleToSymbol(burst.Ptr, digitalBuffer, 255);
             burst.Length = 510;
+        }
+
+        private unsafe void Initialize(double iqSamplerate, int iqBufferLength)
+        {
+            FreeBuffers();
+
+            _samplerateIn = iqSamplerate;
+            _interpolation = 1;
+            while (_samplerateIn * _interpolation < 90000.0)
+                _interpolation++;
+            
+            _samplerate = _samplerateIn * _interpolation;
+            _length = iqBufferLength * _interpolation;
+            
+            _symbolLength = _samplerate / 18000.0;
+            _windowLength = (int)(_symbolLength * 255.0 + 0.5);
+            _tailBufferLength = (int)(_symbolLength + 0.5);
+
+            _buffer = UnsafeBuffer.Create(_length + _tailBufferLength, sizeof(Complex));
+            _bufferPtr = (Complex*)(void*)_buffer;
+            
+            // Allocate larger temp buffer to be safe
+            _tempBuffer = UnsafeBuffer.Create((int)_samplerate, sizeof(float));
+            _tempBufferPtr = (float*)(void*)_tempBuffer;
+
+            // Filters
+            _filterLength = Math.Max((int)(_samplerate / 18000.0) | 1, 5);
+            float[] coeffs = FilterBuilder.MakeSinc((float)_samplerate, 13500f, _filterLength);
+            _matchedFilter = new IQFirFilter(coeffs);
+            _fsFilter = new FirFilter(coeffs);
+
+            // Pre-calculate Offsets
+            _ntsOffsetTMO = (int)(122.0 * _symbolLength + 0.5);
+            _ntsOffsetDMO = (int)(115.0 * _symbolLength + 0.5);
+            _stsOffset = (int)(107.0 * _symbolLength + 0.5);
+
+            // Pre-calculate Resampling Map
+            _symbolIndexMap = new int[256];
+            for (int i = 0; i < 256; i++)
+            {
+                _symbolIndexMap[i] = (int)((i * _symbolLength) + 0.5);
+            }
+
+            CreateFrameSynchronization();
+            _writeAddress = 0;
+            _syncCounter = 0;
         }
 
         private unsafe void CreateFrameSynchronization()
         {
-            double symbolLength = this._samplerate / 18000.0;
-            this.CreateFsBuffers(symbolLength);
-            int symbolIndex1 = 0;
-            for (int index = 0; index < this._nts1Buffer.Length; ++index)
-            {
-                if (((double)index + symbolLength * 0.5) % symbolLength < 1.0)
-                {
-                    this._nts1BufferPtr[index] = this.SymbolToAngel(Demodulator.NormalTrainingSequence1, symbolIndex1);
-                    ++symbolIndex1;
-                }
-                else
-                    this._nts1BufferPtr[index] = 0.0f;
-            }
-            int symbolIndex2 = 0;
-            for (int index = 0; index < this._nts2Buffer.Length; ++index)
-            {
-                if (((double)index + symbolLength * 0.5) % symbolLength < 1.0)
-                {
-                    this._nts2BufferPtr[index] = this.SymbolToAngel(Demodulator.NormalTrainingSequence2, symbolIndex2);
-                    ++symbolIndex2;
-                }
-                else
-                    this._nts2BufferPtr[index] = 0.0f;
-            }
-            int symbolIndex3 = 0;
-            for (int index = 0; index < this._stsBuffer.Length; ++index)
-            {
-                if (((double)index + symbolLength * 0.5) % symbolLength < 1.0)
-                {
-                    this._stsBufferPtr[index] = this.SymbolToAngel(Demodulator.synchronizationTrainingSequence, symbolIndex3);
-                    ++symbolIndex3;
-                }
-                else
-                    this._stsBufferPtr[index] = 0.0f;
-            }
-            this._fsFilter.Process(this._nts1BufferPtr, this._nts1Buffer.Length);
-            this._fsFilter.Process(this._nts2BufferPtr, this._nts2Buffer.Length);
-            this._fsFilter.Process(this._stsBufferPtr, this._stsBuffer.Length);
+            // Prepare training sequence buffers (interpolated)
+            double symLen = _samplerate / 18000.0;
+            CreateFsBuffers(symLen);
+
+            PopulateTrainingBuffer(NormalTrainingSequence1, _nts1BufferPtr, _nts1Buffer.Length, symLen);
+            PopulateTrainingBuffer(NormalTrainingSequence2, _nts2BufferPtr, _nts2Buffer.Length, symLen);
+            PopulateTrainingBuffer(SynchronizationTrainingSequence, _stsBufferPtr, _stsBuffer.Length, symLen);
+
+            // Filter them to match received signal characteristics
+            _fsFilter.Process(_nts1BufferPtr, _nts1Buffer.Length);
+            _fsFilter.Process(_nts2BufferPtr, _nts2Buffer.Length);
+            _fsFilter.Process(_stsBufferPtr, _stsBuffer.Length);
         }
 
-        private unsafe void CreateFsBuffers(double symbolLength)
+        private unsafe void PopulateTrainingBuffer(byte[] seq, float* buffer, int len, double symLen)
         {
-            this._nts1Buffer?.Dispose();
-            this._nts2Buffer?.Dispose();
-            this._stsBuffer?.Dispose();
-            int length1 = (int)(symbolLength * ((double)Demodulator.NormalTrainingSequence1.Length * 0.5)) | 1;
-            int length2 = (int)(symbolLength * ((double)Demodulator.synchronizationTrainingSequence.Length * 0.5)) | 1;
-            this._nts1Buffer = UnsafeBuffer.Create(length1, 4);
-            this._nts1BufferPtr = (float*)(void*)this._nts1Buffer;
-            this._nts2Buffer = UnsafeBuffer.Create(length1, 4);
-            this._nts2BufferPtr = (float*)(void*)this._nts2Buffer;
-            this._stsBuffer = UnsafeBuffer.Create(length2, 4);
-            this._stsBufferPtr = (float*)(void*)this._stsBuffer;
-        }
-
-        private float SymbolToAngel(byte[] trainingSquence, int symbolIndex)
-        {
-            float num = trainingSquence[symbolIndex * 2 + 1] == (byte)1 ? 2.356194f : 0.7853982f;
-            return trainingSquence[symbolIndex * 2] == (byte)1 ? -num : num;
-        }
-
-        private unsafe void AngleToSymbol(byte* bitsBuffer, float* angles, int sourceLength)
-        {
-            while (sourceLength-- > 0)
+            int symIdx = 0;
+            for (int i = 0; i < len; i++)
             {
-                float num = *angles++;
-                *bitsBuffer++ = (double)num < 0.0 ? (byte)1 : (byte)0;
-                *bitsBuffer++ = (double)Math.Abs(num) > 1.57079637050629 ? (byte)1 : (byte)0;
+                if (((i + symLen * 0.5) % symLen) < 1.0)
+                {
+                    buffer[i] = SymbolToAngle(seq, symIdx++);
+                }
+                else
+                {
+                    buffer[i] = 0.0f;
+                }
+            }
+        }
+
+        private unsafe void CreateFsBuffers(double symLen)
+        {
+            _nts1Buffer?.Dispose();
+            _nts2Buffer?.Dispose();
+            _stsBuffer?.Dispose();
+
+            int lenNts = (int)(symLen * NormalTrainingSequence1.Length * 0.5) | 1;
+            int lenSts = (int)(symLen * SynchronizationTrainingSequence.Length * 0.5) | 1;
+
+            _nts1Buffer = UnsafeBuffer.Create(lenNts, sizeof(float));
+            _nts1BufferPtr = (float*)(void*)_nts1Buffer;
+            _nts2Buffer = UnsafeBuffer.Create(lenNts, sizeof(float));
+            _nts2BufferPtr = (float*)(void*)_nts2Buffer;
+            _stsBuffer = UnsafeBuffer.Create(lenSts, sizeof(float));
+            _stsBufferPtr = (float*)(void*)_stsBuffer;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private float SymbolToAngle(byte[] seq, int idx)
+        {
+            if (idx >= seq.Length) return 0.0f;
+            float val = (seq[idx * 2 + 1] == 1) ? 2.356194f : 0.7853982f; // 3pi/4 or pi/4
+            return (seq[idx * 2] == 1) ? -val : val;
+        }
+
+        private unsafe void AngleToSymbol(byte* bitsBuffer, float* angles, int count)
+        {
+            // Simple hard slicer
+            while (count-- > 0)
+            {
+                float a = *angles++;
+                // Bit 1: Is it negative?
+                *bitsBuffer++ = (a < 0) ? (byte)1 : (byte)0;
+                // Bit 2: Is absolute value > pi/2?
+                *bitsBuffer++ = (Math.Abs(a) > PiDivTwo) ? (byte)1 : (byte)0;
             }
         }
 
         private unsafe void FreeBuffers()
         {
-            _buffer?.Dispose();
-            _buffer = null;
-            _bufferPtr = null;
-
-            _tempBuffer?.Dispose();
-            _tempBuffer = null;
-            _tempBufferPtr = null;
-
-            _nts1Buffer?.Dispose();
-            _nts1Buffer = null;
-            _nts1BufferPtr = null;
-
-            _nts2Buffer?.Dispose();
-            _nts2Buffer = null;
-            _nts2BufferPtr = null;
-
-            _stsBuffer?.Dispose();
-            _stsBuffer = null;
-            _stsBufferPtr = null;
+            _buffer?.Dispose(); _buffer = null;
+            _tempBuffer?.Dispose(); _tempBuffer = null;
+            _nts1Buffer?.Dispose(); _nts1Buffer = null;
+            _nts2Buffer?.Dispose(); _nts2Buffer = null;
+            _stsBuffer?.Dispose(); _stsBuffer = null;
         }
 
-        public unsafe void Dispose()
+        public void Dispose()
         {
             FreeBuffers();
             _matchedFilter = null;
             _fsFilter = null;
+            GC.SuppressFinalize(this);
         }
-
-        public float FrequencyError { get; set; }
     }
 }
