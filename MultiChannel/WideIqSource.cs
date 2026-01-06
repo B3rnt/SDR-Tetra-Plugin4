@@ -26,6 +26,54 @@ namespace SDRSharp.Tetra.MultiChannel
         /// </summary>
         public double LastSampleRate { get; private set; }
 
+        /// <summary>
+        /// Fallback sample-rate resolver.
+        /// Some SDR# builds/forks (notably certain AIRSPY SDR# Studio builds)
+        /// do not populate the IIQProcessor.SampleRate property for RawIQ stream hooks,
+        /// resulting in a samplerate of 0 being passed to plugins. This breaks any
+        /// downstream DDC/resampling.
+        /// </summary>
+        private double TryGetSampleRateFromControl()
+        {
+            try
+            {
+                // Common property names on ISharpControl implementations.
+                var t = _control.GetType();
+                foreach (var name in new[] { "SampleRate", "SamplingRate", "IFSampleRate", "IfSampleRate", "InputSampleRate" })
+                {
+                    var p = t.GetProperty(name);
+                    if (p == null) continue;
+                    var v = p.GetValue(_control, null);
+                    if (v is double d) return d;
+                    if (v is float f) return f;
+                    if (v is int i) return i;
+                    if (v is long l) return l;
+                }
+
+                // Some builds expose a Source object that holds the SampleRate.
+                foreach (var name in new[] { "Source", "Frontend", "Device", "Receiver" })
+                {
+                    var p = t.GetProperty(name);
+                    if (p == null) continue;
+                    var src = p.GetValue(_control, null);
+                    if (src == null) continue;
+                    var st = src.GetType();
+                    var sp = st.GetProperty("SampleRate") ?? st.GetProperty("SamplingRate");
+                    if (sp == null) continue;
+                    var sv = sp.GetValue(src, null);
+                    if (sv is double sd) return sd;
+                    if (sv is float sf) return sf;
+                    if (sv is int si) return si;
+                    if (sv is long sl) return sl;
+                }
+            }
+            catch
+            {
+                // ignore
+            }
+            return 0;
+        }
+
         public WideIqSource(ISharpControl control)
         {
             _control = control;
@@ -64,11 +112,22 @@ namespace SDRSharp.Tetra.MultiChannel
         {
             if (length <= 0) return;
 
+            // Workaround for SDR# builds that pass 0Hz for RawIQ hooks.
+            if (samplerate <= 0)
+            {
+                var fallback = TryGetSampleRateFromControl();
+                if (fallback > 0)
+                    samplerate = fallback;
+            }
+
             LastSampleRate = samplerate;
 
             var arr = ArrayPool<Complex>.Shared.Rent(length);
-            for (int i = 0; i < length; i++)
-                arr[i] = samples[i];
+            fixed (Complex* dst = arr)
+            {
+                // Faster than element-by-element copy at high sample rates.
+                Buffer.MemoryCopy(samples, dst, (long)length * sizeof(Complex), (long)length * sizeof(Complex));
+            }
 
             lock (_lock)
             {
