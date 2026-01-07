@@ -1,9 +1,8 @@
-using SDRSharp.Common;
-using SDRSharp.Radio;
 using System;
 using System.Buffers;
 using System.Collections.Generic;
 using System.Threading;
+using SDRSharp.Radio;
 
 namespace SDRSharp.Tetra.MultiChannel
 {
@@ -25,54 +24,6 @@ namespace SDRSharp.Tetra.MultiChannel
         /// so we cache it here from the incoming IQ callback.
         /// </summary>
         public double LastSampleRate { get; private set; }
-
-        /// <summary>
-        /// Fallback sample-rate resolver.
-        /// Some SDR# builds/forks (notably certain AIRSPY SDR# Studio builds)
-        /// do not populate the IIQProcessor.SampleRate property for RawIQ stream hooks,
-        /// resulting in a samplerate of 0 being passed to plugins. This breaks any
-        /// downstream DDC/resampling.
-        /// </summary>
-        private double TryGetSampleRateFromControl()
-        {
-            try
-            {
-                // Common property names on ISharpControl implementations.
-                var t = _control.GetType();
-                foreach (var name in new[] { "SampleRate", "SamplingRate", "IFSampleRate", "IfSampleRate", "InputSampleRate" })
-                {
-                    var p = t.GetProperty(name);
-                    if (p == null) continue;
-                    var v = p.GetValue(_control, null);
-                    if (v is double d) return d;
-                    if (v is float f) return f;
-                    if (v is int i) return i;
-                    if (v is long l) return l;
-                }
-
-                // Some builds expose a Source object that holds the SampleRate.
-                foreach (var name in new[] { "Source", "Frontend", "Device", "Receiver" })
-                {
-                    var p = t.GetProperty(name);
-                    if (p == null) continue;
-                    var src = p.GetValue(_control, null);
-                    if (src == null) continue;
-                    var st = src.GetType();
-                    var sp = st.GetProperty("SampleRate") ?? st.GetProperty("SamplingRate");
-                    if (sp == null) continue;
-                    var sv = sp.GetValue(src, null);
-                    if (sv is double sd) return sd;
-                    if (sv is float sf) return sf;
-                    if (sv is int si) return si;
-                    if (sv is long sl) return sl;
-                }
-            }
-            catch
-            {
-                // ignore
-            }
-            return 0;
-        }
 
         public WideIqSource(ISharpControl control)
         {
@@ -108,6 +59,96 @@ namespace SDRSharp.Tetra.MultiChannel
             }
         }
 
+        /// <summary>
+        /// Fallback sample-rate resolver.
+        /// Some SDR# builds/forks (notably certain AIRSPY SDR# Studio builds)
+        /// do not populate the IIQProcessor.SampleRate property for RawIQ stream hooks,
+        /// resulting in a samplerate of 0 being passed to plugins. This breaks any
+        /// downstream DDC/resampling.
+        /// </summary>
+        private double TryGetSampleRateFromControl()
+        {
+            try
+            {
+                var t = _control.GetType();
+
+                // First try common well-known property names
+                foreach (var name in new[] { "SampleRate", "SamplingRate", "IFSampleRate", "IfSampleRate", "InputSampleRate", "SampleRateHz", "SampleRateIn", "SampleRateOut" })
+                {
+                    var p = t.GetProperty(name);
+                    if (p == null) continue;
+                    var v = p.GetValue(_control, null);
+                    if (v is double d && d > 0) return d;
+                    if (v is float f && f > 0) return f;
+                    if (v is int i && i > 0) return i;
+                    if (v is long l && l > 0) return l;
+                }
+
+                // Some builds expose a nested Source/Frontend/Device object holding the sample rate
+                foreach (var name in new[] { "Source", "Frontend", "Device", "Receiver", "Parent" })
+                {
+                    var p = t.GetProperty(name);
+                    if (p == null) continue;
+                    var src = p.GetValue(_control, null);
+                    if (src == null) continue;
+                    var st = src.GetType();
+
+                    // Try common sample-rate property names on the nested object
+                    foreach (var sn in new[] { "SampleRate", "SamplingRate", "SampleRateHz", "IFSampleRate" })
+                    {
+                        var sp = st.GetProperty(sn);
+                        if (sp == null) continue;
+                        var sv = sp.GetValue(src, null);
+                        if (sv is double sd && sd > 0) return sd;
+                        if (sv is float sf && sf > 0) return sf;
+                        if (sv is int si && si > 0) return si;
+                        if (sv is long sl && sl > 0) return sl;
+                    }
+
+                    // Generic one-level scan: any property name containing "sample", "rate" or "hz"
+                    foreach (var sp in st.GetProperties())
+                    {
+                        var nm = sp.Name.ToLowerInvariant();
+                        if (nm.Contains("sample") || nm.Contains("rate") || nm.Contains("hz"))
+                        {
+                            try
+                            {
+                                var sv = sp.GetValue(src, null);
+                                if (sv is double sd2 && sd2 > 0) return sd2;
+                                if (sv is float sf2 && sf2 > 0) return sf2;
+                                if (sv is int si2 && si2 > 0) return si2;
+                                if (sv is long sl2 && sl2 > 0) return sl2;
+                            }
+                            catch
+                            {
+                                // ignore property exceptions
+                            }
+                        }
+                    }
+                }
+
+                // As a last resort, scan top-level properties generically
+                foreach (var p in t.GetProperties())
+                {
+                    var n = p.Name.ToLowerInvariant();
+                    if (n.Contains("sample") || n.Contains("rate") || n.Contains("hz"))
+                    {
+                        var v = p.GetValue(_control, null);
+                        if (v is double d2 && d2 > 0) return d2;
+                        if (v is float f2 && f2 > 0) return f2;
+                        if (v is int i2 && i2 > 0) return i2;
+                        if (v is long l2 && l2 > 0) return l2;
+                    }
+                }
+            }
+            catch
+            {
+                // swallow reflection exceptions - fallback to 0 below
+            }
+
+            return 0;
+        }
+
         private void OnIqReady(Complex* samples, double samplerate, int length)
         {
             if (length <= 0) return;
@@ -117,7 +158,20 @@ namespace SDRSharp.Tetra.MultiChannel
             {
                 var fallback = TryGetSampleRateFromControl();
                 if (fallback > 0)
+                {
                     samplerate = fallback;
+                }
+                else if (LastSampleRate > 0)
+                {
+                    // Use cached value from previous good callbacks
+                    samplerate = LastSampleRate;
+                }
+                else
+                {
+                    // No reliable sample-rate -> drop this block to avoid passing 0 to downstream DDC
+                    // This prevents configuring the DDC with 0 and stops breaking resampling/decoding.
+                    return;
+                }
             }
 
             LastSampleRate = samplerate;
@@ -182,10 +236,5 @@ namespace SDRSharp.Tetra.MultiChannel
 
             // No explicit unregister API in SDR# stream hooks, so we just stop dispatching.
         }
-    }
-
-    public unsafe interface IWideIqSink
-    {
-        void OnWideIq(Complex* samples, double samplerate, int length);
     }
 }
